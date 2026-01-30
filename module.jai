@@ -133,7 +133,7 @@ detect_convex_collision :: (obj_1: Indexed_Triangle_Positions, obj_1_origin: Vec
 }
 
 // assumes that all objects are convex!
-resolve_collisions_against_body :: (positioned_colliders : [..] Collision_Geometry, body_collider: Collision_Geometry, body_position : *Vector3, body_velocity : *Vector3, on_ground: *bool) {
+resolve_collisions_against_body :: (positioned_colliders : [] Collision_Geometry, body_collider: Collision_Geometry, body_position : *Vector3, body_velocity : *Vector3, on_ground: *bool) {
 
     on_ground.* = false;
     positioned_body_aabb := change_aabb_origin(body_collider.aabb, body_position);
