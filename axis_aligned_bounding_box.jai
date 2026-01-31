@@ -1,6 +1,6 @@
 #import "Math";
 
-#import "math";
+#import "tbx_math";
 
 AABB :: Axis_Aligned_Bounding_Box;
 
