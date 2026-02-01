@@ -1,5 +1,5 @@
 // in the future I don't want to depend on all of geom, because all I need is the itp type doing it for now.
-#import "geometry";
+#import "tbx/geometry";
 
 #load "axis_aligned_bounding_box.jai";
 
