@@ -6,9 +6,17 @@
 #import "Math";
 #import "Basic";
 
+
+// good to use when there's just like one of them.
 Collision_Geometry :: struct {
     indexed_triangle_positions : Indexed_Triangle_Positions;
     aabb : AABB;
+}
+
+// good to use when you need to iterate over each efficiently
+Collision_Geometries :: struct {
+    indexed_triangle_positions : [..] Indexed_Triangle_Positions;
+    aabbs : [..] AABB;
 }
 
 Collision_Result :: struct {
@@ -133,12 +141,14 @@ detect_convex_collision :: (obj_1: Indexed_Triangle_Positions, obj_1_origin: Vec
 }
 
 // assumes that all objects are convex!
-resolve_collisions_against_body :: (positioned_colliders : [] Collision_Geometry, body_collider: Collision_Geometry, body_position : *Vector3, body_velocity : *Vector3, on_ground: *bool) {
+resolve_collisions_against_body :: (positioned_colliders : Collision_Geometries, body_collider: Collision_Geometry, body_position : *Vector3, body_velocity : *Vector3, on_ground: *bool) {
 
     on_ground.* = false;
     positioned_body_aabb := change_aabb_origin(body_collider.aabb, body_position);
 
-    for collider : positioned_colliders {
+    // eventually could be automated with a proper dynamic soa array.
+    for i : 0..positioned_colliders.aabbs.count-1 {
+        collider := Collision_Geometry.{positioned_colliders.indexed_triangle_positions[i], positioned_colliders.aabbs[i]};
         if aabbs_are_disjoint(collider.aabb, positioned_body_aabb) {
             continue;
         } 
