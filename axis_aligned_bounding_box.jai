@@ -10,7 +10,7 @@ Axis_Aligned_Bounding_Box :: struct {
 
 create_aabb_from_positions :: (positions: [..] Vector3) -> AABB {
     min_so_far := ONE3 * FLOAT32_MAX;
-    max_so_far := ONE3 * FLOAT32_MIN;
+    max_so_far := ONE3 * -FLOAT32_MAX;
 
     for positions {
         min_so_far = min(min_so_far, it);
