@@ -20,6 +20,7 @@ create_aabb_from_positions :: (positions: [..] Vector3) -> AABB {
     return .{min_so_far, max_so_far};
 }
 
+// bad function name, shouldn't be called change should have copy or something in it.
 change_aabb_origin :: (aabb : AABB, position: Vector3) -> AABB {
     out : AABB;
 

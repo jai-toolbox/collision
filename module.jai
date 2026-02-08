@@ -177,4 +177,100 @@ resolve_collisions_against_body :: (positioned_colliders : Collision_Geometries,
     }
 }
 
+Ray_Hit_Result :: struct {
+    hit := false;
+    hit_percent : float;  
+    hit_point : Vector3;
+    hit_normal : Vector3;
+    triangle_index : int = -1;  // which triangle was hit
+}
 
+// Möller–Trumbore ray-triangle intersection algorithm: https://cadxfem.org/inf/Fast%20MinimumStorage%20RayTriangle%20Intersection.pdf
+intersect_ray_triangle :: (ray: Ray, v0: Vector3, v1: Vector3, v2: Vector3) -> has_intersection: bool, t: float, u: float, v: float {
+    EPSILON :: 0.000001;
+    
+    edge1 := v1 - v0;
+    edge2 := v2 - v0;
+    
+    h := cross(ray.reach, edge2);
+    a := dot(edge1, h);
+    
+    ray_is_parallel_to_triangle := a > -EPSILON && a < EPSILON;
+    if ray_is_parallel_to_triangle return false, 0, 0, 0;
+    
+    f := 1.0 / a;
+    s := ray.origin - v0;
+    u := f * dot(s, h);
+    
+    u_outside_triangle := u < 0.0 || u > 1.0;
+    if u_outside_triangle return false, 0, 0, 0;
+    
+    q := cross(s, edge1);
+    v := f * dot(ray.reach, q);
+    
+    v_outside_triangle := v < 0.0 || u + v > 1.0;
+    if v_outside_triangle return false, 0, 0, 0;
+    
+    t := f * dot(edge2, q);
+    
+    hit_at_valid_place_on_ray := t > EPSILON && t <= 1.0;
+    if hit_at_valid_place_on_ray return true, t, u, v;
+    
+    return false, 0, 0, 0;
+}
+
+// assumes geometry vertices are already in world space
+intersect_ray_geometry :: (ray: Ray, itp: Indexed_Triangle_Positions) -> Ray_Hit_Result {
+    result : Ray_Hit_Result;
+    closest_t := FLOAT32_MAX;
+    
+    i := 0;
+    triangle_index := 0;
+    while i + 2 < itp.indices.count {
+        v0 := itp.positions[itp.indices[i]];
+        v1 := itp.positions[itp.indices[i + 1]];
+        v2 := itp.positions[itp.indices[i + 2]];
+        
+        has_hit, t, u, v := intersect_ray_triangle(ray, v0, v1, v2);
+        
+        if has_hit && t < closest_t && t >= 0 {
+            closest_t = t;
+            result.hit = true;
+            result.hit_percent = t;
+            result.hit_point = ray.origin + ray.reach * t;
+            result.hit_normal = compute_normal_of_triangle(v0, v1, v2);
+            result.triangle_index = triangle_index;
+        }
+        
+        i += 3;
+        triangle_index += 1;
+    }
+    
+    return result;
+}
+
+// everything is in world space.
+can_hit_target_geometry :: ( ray: Ray, target: Collision_Geometry, blockers: Collision_Geometries) -> hit: bool, hit_result: Ray_Hit_Result {
+
+    target_aabb_hit, target_aabb_percent := intersect_ray(ray, target.aabb);
+    if !target_aabb_hit return false, .{}; // we we can't even reach the aabb of the target, then go away.
+    
+    target_hit_result := intersect_ray_geometry(ray, target.indexed_triangle_positions);
+    if !target_hit_result.hit return false, .{}; // if we can't even hit the target iself, then go away.
+    
+    // now it's guarenteed that the ray intersects the target.
+
+    for i : 0..blockers.aabbs.count-1 {
+        blocker_aabb_hit, blocker_aabb_percent := intersect_ray(ray, blockers.aabbs[i]);
+        
+        if !blocker_aabb_hit continue;  // if you don't hit the aabb, you don't hit what's inside.
+
+        if blocker_aabb_percent >= target_hit_result.hit_percent continue; // the hit is further away than the hit on the targets aabb, not blocking so we can skip narrowphase
+
+        blocker_hit_result := intersect_ray_geometry(ray, blockers.indexed_triangle_positions[i]);
+        
+        if blocker_hit_result.hit && blocker_hit_result.hit_percent < target_hit_result.hit_percent return false, .{};  // the ray was blocked by this geometry.
+    }
+    
+    return true, target_hit_result;
+}
