@@ -423,11 +423,11 @@ Ellipsoid_Collision_Result :: struct {
 
 // this is the function that you call to do everything.
 resolve_collisions_against_body_ellipsoid :: (
-    positioned_colliders: []Collision_Geometry, 
+    positioned_colliders: Collision_Geometries, 
     ellipsoid_radius: Vector3,
     body_position: *Vector3, 
-    body_velocity: *Vector3, 
-    gravity: Vector3,
+    body_velocity: *Vector3,  // rename to body frame velocity
+    gravity: Vector3, // rename to frame gravity
     on_ground: *bool
 ) {
     on_ground.* = false;
@@ -436,26 +436,25 @@ resolve_collisions_against_body_ellipsoid :: (
     body_aabb := make_ellipsoid_movement_aabb(body_position.*, body_velocity.*, gravity, ellipsoid_radius);
     
     // collect triangles from colliders that pass broadphase
-    triangles: [..]Triangle;
+    triangles: [..] Triangle;
     triangles.allocator = temp;
     
-    for collider: positioned_colliders {
+    for 0..positioned_colliders.aabbs.count-1 {
+        collider := Collision_Geometry.{positioned_colliders.indexed_triangle_positions[it], positioned_colliders.aabbs[it]};
         if aabbs_are_disjoint(collider.aabb, body_aabb) {
             continue;
         }
         
-        // extract triangles from this collider
         extract_triangles_from_geometry(collider, *triangles);
     }
     
+    // this should pretty much never happen, but in case it does.
     if triangles.count == 0 {
-        // no potential collisions, just apply movement
         body_position.* += body_velocity.*;
         body_position.* += gravity;
         return;
     }
     
-    // run ellipsoid collision detection and response
     result := collide_and_slide_full(
         body_position.*,
         body_velocity.*,
