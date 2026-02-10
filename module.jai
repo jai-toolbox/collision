@@ -2,6 +2,7 @@
 #import "tbx/geometry";
 
 #load "axis_aligned_bounding_box.jai";
+#load "ellipsoid.jai";
 
 #import "Math";
 #import "Basic";
@@ -166,5 +167,3 @@ resolve_collisions_against_body :: (positioned_colliders : [] Collision_Geometry
         } // otherwise aabbs collided but the inner geometry did not.
     }
 }
-
-
