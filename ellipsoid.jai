@@ -426,14 +426,14 @@ resolve_collisions_against_body_ellipsoid :: (
     positioned_colliders: Collision_Geometries, 
     ellipsoid_radius: Vector3,
     body_position: *Vector3, 
-    body_velocity: *Vector3,  // rename to body frame velocity
+    desired_body_position_offset: *Vector3,  // rename to body frame velocity
     gravity: Vector3, // rename to frame gravity
     on_ground: *bool
 ) {
     on_ground.* = false;
     
     // expand body aabb by velocity + ellipsoid radius for broadphase
-    body_aabb := make_ellipsoid_movement_aabb(body_position.*, body_velocity.*, gravity, ellipsoid_radius);
+    body_aabb := make_ellipsoid_movement_aabb(body_position.*, desired_body_position_offset.*, gravity, ellipsoid_radius);
     
     // collect triangles from colliders that pass broadphase
     triangles: [..] Triangle;
@@ -448,23 +448,23 @@ resolve_collisions_against_body_ellipsoid :: (
         extract_triangles_from_geometry(collider, *triangles);
     }
     
-    // this should pretty much never happen, but in case it does.
-    if triangles.count == 0 {
-        body_position.* += body_velocity.*;
+    didnt_collide_with_anything := triangles.count == 0;
+    if didnt_collide_with_anything {
+        body_position.* += desired_body_position_offset.*;
         body_position.* += gravity;
         return;
     }
     
     result := collide_and_slide_full(
         body_position.*,
-        body_velocity.*,
+        desired_body_position_offset.*,
         gravity,
         ellipsoid_radius,
         triangles
     );
     
     body_position.* = result.new_position;
-    body_velocity.* = result.new_velocity;
+    desired_body_position_offset.* = result.new_velocity;
     on_ground.* = result.on_ground;
 }
 
