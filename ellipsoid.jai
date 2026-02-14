@@ -12,19 +12,21 @@ space because then doing collisions against your sphere is much simpler.
 #import "Basic";
 #import "Math";
 
-Collision_Packet :: struct {
+#import "tbx/math";
+
+Recursive_Collision_Data :: struct {
 
     // ellipsoid radius (in world space)
     ellipsoid_radius: Vector3;
     
     // information about the move being requested (in ellipsoid space)
-    e_velocity: Vector3;
-    e_normalized_velocity: Vector3;
+    e_displacement: Vector3;
+    e_normalized_displacement: Vector3;
     e_base_point: Vector3;
     
     // hit information
     found_collision: bool;
-    nearest_distance: float;
+    parametric_distance_along_displacement_at_which_first_collision_occurs: float;
     intersection_point: Vector3;
     
     // iteration tracking for recursive calls
@@ -73,62 +75,12 @@ classify_point_ :: (point: Vector3, plane: Plane) -> s32 {
     return PLANE_ON;
 }
 
-point_in_triangle :: (point: Vector3, tri: Triangle) -> bool {
-
-    // barycentric coordinates
-    edge_to_vertex2 := tri.p2 - tri.p0;
-    edge_to_vertex1 := tri.p1 - tri.p0;
-    edge_to_point := point - tri.p0;
-    
-    dot_edge2_edge2 := dot(edge_to_vertex2, edge_to_vertex2);
-    dot_edge2_edge1 := dot(edge_to_vertex2, edge_to_vertex1);
-    dot_edge2_point := dot(edge_to_vertex2, edge_to_point);
-    dot_edge1_edge1 := dot(edge_to_vertex1, edge_to_vertex1);
-    dot_edge1_point := dot(edge_to_vertex1, edge_to_point);
-    
-    inverse_denominator := 1.0 / (dot_edge2_edge2 * dot_edge1_edge1 - dot_edge2_edge1 * dot_edge2_edge1);
-    barycentric_u := (dot_edge1_edge1 * dot_edge2_point - dot_edge2_edge1 * dot_edge1_point) * inverse_denominator;
-    barycentric_v := (dot_edge2_edge2 * dot_edge1_point - dot_edge2_edge1 * dot_edge2_point) * inverse_denominator;
-    
-    return (barycentric_u >= 0) && (barycentric_v >= 0) && (barycentric_u + barycentric_v <= 1);
-}
-
-// get lowest root of quadratic equation within range [0, max_r]
-get_lowest_root :: (a: float, b: float, c: float, max_r: float) -> (found: bool, root: float) {
-    determinant := b * b - 4.0 * a * c;
-    
-    if determinant < 0.0 {
-        return false, 0;
-    }
-    
-    sqrt_d := sqrt(determinant);
-    r1 := (-b - sqrt_d) / (2.0 * a);
-    r2 := (-b + sqrt_d) / (2.0 * a);
-    
-    // sort so r1 <= r2
-    if r1 > r2 {
-        temp := r1;
-        r1 = r2;
-        r2 = temp;
-    }
-    
-    if r1 > 0 && r1 < max_r {
-        return true, r1;
-    }
-    
-    if r2 > 0 && r2 < max_r {
-        return true, r2;
-    }
-    
-    return false, 0;
-}
-
 // check collision between unit sphere and triangle (in ellipsoid space)
-check_triangle :: (packet: *Collision_Packet, tri: Triangle) {
+store_collision_data_between_swept_unit_sphere_and_triangle :: (packet: *Recursive_Collision_Data, tri: Triangle) {
     plane := plane_from_triangle(tri);
     
     // only check front-facing triangles
-    if dot(plane.normal, packet.e_normalized_velocity) >= 0 {
+    if dot(plane.normal, packet.e_normalized_displacement) >= 0 {
         return;
     }
     
@@ -140,7 +92,7 @@ check_triangle :: (packet: *Collision_Packet, tri: Triangle) {
     signed_dist := signed_distance_to_plane(packet.e_base_point, plane);
     
     // cache velocity dot normal
-    normal_dot_vel := dot(plane.normal, packet.e_velocity);
+    normal_dot_vel := dot(plane.normal, packet.e_displacement);
     
     // sphere traveling parallel to plane
     if normal_dot_vel == 0 {
@@ -182,7 +134,7 @@ check_triangle :: (packet: *Collision_Packet, tri: Triangle) {
     
     // check collision with triangle interior
     if !embedded_in_plane {
-        plane_intersection := packet.e_base_point - plane.normal + t0 * packet.e_velocity;
+        plane_intersection := packet.e_base_point - plane.normal + t0 * packet.e_displacement;
         
         if point_in_triangle(plane_intersection, tri) {
             found_collision = true;
@@ -193,14 +145,14 @@ check_triangle :: (packet: *Collision_Packet, tri: Triangle) {
     
     // check collision with vertices and edges
     if !found_collision {
-        velocity_sq_len := length_squared(packet.e_velocity);
+        velocity_sq_len := length_squared(packet.e_displacement);
         
         // helper to check vertex collision
-        check_vertex :: (packet: *Collision_Packet, vertex: Vector3, 
+        check_vertex :: (packet: *Recursive_Collision_Data, vertex: Vector3, 
                          velocity_sq_len: float, t: *float, 
                          collision_point: *Vector3) -> bool {
             base := packet.e_base_point;
-            vel := packet.e_velocity;
+            vel := packet.e_displacement;
             
             // Solve: |base + t*vel - vertex|^2 = 1
             // a*t^2 + b*t + c = 0
@@ -208,7 +160,7 @@ check_triangle :: (packet: *Collision_Packet, tri: Triangle) {
             b := 2.0 * dot(vel, base - vertex);
             c := length_squared(vertex - base) - 1.0;
             
-            found, new_t := get_lowest_root(a, b, c, <<t);
+            found, new_t := get_smallest_non_negative_root_of_quadratic(a, b, c, <<t);
             if found {
                 <<t = new_t;
                 <<collision_point = vertex;
@@ -222,11 +174,11 @@ check_triangle :: (packet: *Collision_Packet, tri: Triangle) {
         found_collision = check_vertex(packet, tri.p2, velocity_sq_len, *t, *collision_point) || found_collision;
         
         // helper to check edge collision
-        check_edge :: (packet: *Collision_Packet, p1: Vector3, p2: Vector3,
+        check_edge :: (packet: *Recursive_Collision_Data, p1: Vector3, p2: Vector3,
                        velocity_sq_len: float, t: *float,
                        collision_point: *Vector3) -> bool {
             base := packet.e_base_point;
-            vel := packet.e_velocity;
+            vel := packet.e_displacement;
             
             edge := p2 - p1;
             base_to_vertex := p1 - base;
@@ -240,7 +192,7 @@ check_triangle :: (packet: *Collision_Packet, tri: Triangle) {
             b := edge_sq_len * (2.0 * dot(vel, base_to_vertex)) - 2.0 * edge_dot_vel * edge_dot_base_to_vert;
             c := edge_sq_len * (1.0 - length_squared(base_to_vertex)) + edge_dot_base_to_vert * edge_dot_base_to_vert;
             
-            found, new_t := get_lowest_root(a, b, c, <<t);
+            found, new_t := get_smallest_non_negative_root_of_quadratic(a, b, c, <<t);
             if found {
                 // check if intersection is within edge segment
                 f := (edge_dot_vel * new_t - edge_dot_base_to_vert) / edge_sq_len;
@@ -260,10 +212,10 @@ check_triangle :: (packet: *Collision_Packet, tri: Triangle) {
     
     // update collision packet
     if found_collision {
-        dist_to_collision := t * length(packet.e_velocity);
+        dist_to_collision := t * length(packet.e_displacement);
         
-        if !packet.found_collision || dist_to_collision < packet.nearest_distance {
-            packet.nearest_distance = dist_to_collision;
+        if !packet.found_collision || dist_to_collision < packet.parametric_distance_along_displacement_at_which_first_collision_occurs {
+            packet.parametric_distance_along_displacement_at_which_first_collision_occurs = dist_to_collision;
             packet.intersection_point = collision_point;
             packet.found_collision = true;
         }
@@ -275,146 +227,17 @@ check_triangle :: (packet: *Collision_Packet, tri: Triangle) {
 VERY_CLOSE_DISTANCE :: 0.005;
 MAX_RECURSION_DEPTH :: 5;
 
-// main collision and slide function
-collide_and_slide :: (position: Vector3, velocity: Vector3, 
-                      ellipsoid_radius: Vector3, triangles: []Triangle) -> Vector3 {
-    packet: Collision_Packet;
-    packet.ellipsoid_radius = ellipsoid_radius;
-    packet.collision_recursion_depth = 0;
-    
-    e_position := world_to_ellipsoid(position, ellipsoid_radius);
-    e_velocity := world_to_ellipsoid(velocity, ellipsoid_radius);
-    
-    // do collision detection and response
-    final_position := collide_with_world(*packet, e_position, e_velocity, triangles);
-    
-    return ellipsoid_to_world(final_position, ellipsoid_radius);
-}
-
-// recursive collision response
-collide_with_world :: (packet: *Collision_Packet, position: Vector3, 
-                       velocity: Vector3, triangles: []Triangle) -> Vector3 {
-
-    if packet.collision_recursion_depth > MAX_RECURSION_DEPTH {
-        return position;
-    }
-    
-    // setup packet for this iteration
-    packet.e_velocity = velocity;
-    packet.e_normalized_velocity = normalize(velocity);
-    packet.e_base_point = position;
-    packet.found_collision = false;
-    packet.nearest_distance = 0;
-    
-    // convert triangles to ellipsoid space and check each one
-    for tri: triangles {
-        e_tri: Triangle;
-        e_tri.p0 = world_to_ellipsoid(tri.p0, packet.ellipsoid_radius);
-        e_tri.p1 = world_to_ellipsoid(tri.p1, packet.ellipsoid_radius);
-        e_tri.p2 = world_to_ellipsoid(tri.p2, packet.ellipsoid_radius);
-        check_triangle(packet, e_tri);
-    }
-    
-    if !packet.found_collision {
-        return position + velocity;
-    }
-
-    // now we know that a collision did occur and so we compute the responce.
-    
-    destination := position + velocity;
-    new_base_point := position;
-    
-    // move to collision point (with small offset)
-    if packet.nearest_distance >= VERY_CLOSE_DISTANCE {
-        v := normalize(velocity) * (packet.nearest_distance - VERY_CLOSE_DISTANCE);
-        new_base_point = position + v;
-        
-        // adjust intersection point
-        v = normalize(v);
-        packet.intersection_point = packet.intersection_point - VERY_CLOSE_DISTANCE * v;
-    }
-    
-    // calculate sliding plane
-    slide_plane_origin := packet.intersection_point;
-    slide_plane_normal := normalize(new_base_point - packet.intersection_point);
-    
-    slide_plane: Plane;
-    slide_plane.normal = slide_plane_normal;
-    slide_plane.d = -dot(slide_plane_normal, slide_plane_origin);
-    
-    // project destination onto sliding plane
-    dist := signed_distance_to_plane(destination, slide_plane);
-    new_destination := destination - dist * slide_plane_normal;
-    
-    // calculate new velocity vector
-    new_velocity := new_destination - packet.intersection_point;
-    
-    // check for very small velocity (avoid infinite recursion)
-    if length(new_velocity) < VERY_CLOSE_DISTANCE {
-        return new_base_point;
-    }
-    
-    // recurse
-    packet.collision_recursion_depth += 1;
-    return collide_with_world(packet, new_base_point, new_velocity, triangles);
-}
-
-
-// apply gravity with collision
-collide_and_slide_with_gravity :: (position: Vector3, velocity: Vector3, gravity: Vector3,
-                                    ellipsoid_radius: Vector3, triangles: []Triangle) -> Vector3 {
-    // First, handle horizontal movement
-    pos := collide_and_slide(position, velocity, ellipsoid_radius, triangles);
-    
-    // Then handle gravity
-    pos = collide_and_slide(pos, gravity, ellipsoid_radius, triangles);
-    
-    return pos;
-}
-
 
 // helper to create a vector faster that probably doesn't have to exist but does because it's actually useful below to save keystrokes.
 v3 :: (x: float, y: float, z: float) -> Vector3 {
     return .{x, y, z};
 }
 
-test :: () {
-    ellipsoid_radius := v3(0.5, 1.0, 0.5);
-    
-    player_position := v3(0, 5, 0);
-    player_velocity := v3(0.1, 0, 0);  // slower horizontal movement
-    gravity := v3(0, -0.1, 0);
-    
-    triangles: [2]Triangle;
-    triangles[0] = .{
-        v3(-10, 0, -10),
-        v3(10, 0, 10),      
-        v3(10, 0, -10)
-    };
-    triangles[1] = .{
-        v3(-10, 0, -10),
-        v3(-10, 0, 10),     
-        v3(10, 0, 10)
-    };
-    
-    for frame: 0..60 {
-        player_position = collide_and_slide_with_gravity(
-            player_position, 
-            player_velocity,
-            gravity,
-            ellipsoid_radius, 
-            triangles
-        );
-        
-        print("Frame %: Position = (%, %, %)\n", 
-              frame, player_position.x, player_position.y, player_position.z);
-    }
-}
 
-
+// Note the internal values may be in espace
 Ellipsoid_Collision_Result :: struct {
     new_position: Vector3;
-    new_velocity: Vector3;
+    new_displacement: Vector3;
     on_ground: bool;
     collision_occurred: bool;
     ground_normal: Vector3;
@@ -422,18 +245,23 @@ Ellipsoid_Collision_Result :: struct {
 
 
 // this is the function that you call to do everything.
+// collide and slide until fully displaced or something.
+// in the future it might be good to also pass in the real velocity that the user has
+// and then when they collide with something we can "subtract off" the part going into the collision, the way it is done with the old collision system
+// this would stop players from building up velocity on a wall, but at the same time, that is a little bit fun.
+
 resolve_collisions_against_body_ellipsoid :: (
     positioned_colliders: Collision_Geometries, 
     ellipsoid_radius: Vector3,
     body_position: *Vector3, 
-    desired_body_position_offset: *Vector3,  // rename to body frame velocity
+    displacement: *Vector3,  // rename to body frame velocity
+    on_ground: *bool,
     gravity: Vector3, // rename to frame gravity
-    on_ground: *bool
 ) {
     on_ground.* = false;
     
     // expand body aabb by velocity + ellipsoid radius for broadphase
-    body_aabb := make_ellipsoid_movement_aabb(body_position.*, desired_body_position_offset.*, gravity, ellipsoid_radius);
+    body_aabb := make_ellipsoid_movement_aabb(body_position.*, displacement.*, gravity, ellipsoid_radius);
     
     // collect triangles from colliders that pass broadphase
     triangles: [..] Triangle;
@@ -450,106 +278,108 @@ resolve_collisions_against_body_ellipsoid :: (
     
     didnt_collide_with_anything := triangles.count == 0;
     if didnt_collide_with_anything {
-        body_position.* += desired_body_position_offset.*;
+        body_position.* += displacement.*;
         body_position.* += gravity;
         return;
     }
     
-    result := collide_and_slide_full(
+    result := collide_and_slide(
         body_position.*,
-        desired_body_position_offset.*,
+        displacement.*,
         gravity,
         ellipsoid_radius,
         triangles
     );
     
     body_position.* = result.new_position;
-    desired_body_position_offset.* = result.new_velocity;
+    // displacement.* = result.new_displacement;
     on_ground.* = result.on_ground;
 }
 
 
-collide_and_slide_full :: (
-    position: Vector3, 
-    velocity: Vector3, 
+collide_and_slide :: (
+    position: Vector3, // rename to initial position
+    displacement: Vector3, 
     gravity: Vector3,
     ellipsoid_radius: Vector3, 
     triangles: []Triangle
-) -> Ellipsoid_Collision_Result {
+) -> world_space_result: Ellipsoid_Collision_Result {
     
     result: Ellipsoid_Collision_Result;
     result.on_ground = false;
     result.collision_occurred = false;
     
     // phase 1: apply horizontal/intended movement
-    packet: Collision_Packet;
+    packet: Recursive_Collision_Data;
     packet.ellipsoid_radius = ellipsoid_radius;
     packet.collision_recursion_depth = 0;
     
     e_position := world_to_ellipsoid(position, ellipsoid_radius);
-    e_velocity := world_to_ellipsoid(velocity, ellipsoid_radius);
+    e_displacement := world_to_ellipsoid(displacement, ellipsoid_radius);
     
-    pos_after_velocity := collide_with_world_tracking(
+    pos_after_displacement := collide_and_slide_recursive(
         *packet, 
         e_position, 
-        e_velocity, 
+        e_displacement, 
         triangles,
         *result
     );
     
-    // phase 2: apply gravity
-    packet.collision_recursion_depth = 0;
-    e_gravity := world_to_ellipsoid(gravity, ellipsoid_radius);
+    // phase 2: apply gravity, not doing this yet.
+    // packet.collision_recursion_depth = 0;
+    // e_gravity := world_to_ellipsoid(gravity, ellipsoid_radius);
+    // 
+    // final_e_position := collide_and_slide_recursive(
+    //     *packet,
+    //     pos_after_displacement,
+    //     e_gravity,
+    //     triangles,
+    //     *result
+    // );
     
-    final_e_position := collide_with_world_tracking(
-        *packet,
-        pos_after_velocity,
-        e_gravity,
-        triangles,
-        *result
-    );
+    // result.new_position = ellipsoid_to_world(final_e_position, ellipsoid_radius);
+    result.new_position = ellipsoid_to_world(pos_after_displacement, ellipsoid_radius);
     
-    result.new_position = ellipsoid_to_world(final_e_position, ellipsoid_radius);
-    
-    // adjust velocity based on collision
-    if result.collision_occurred {
-        // remove velocity component going into ground
-        if result.on_ground {
-            vel_dot_normal := dot(velocity, result.ground_normal);
-            if vel_dot_normal < 0 {
-                result.new_velocity = velocity - vel_dot_normal * result.ground_normal;
-            } else {
-                result.new_velocity = velocity;
-            }
-        } else {
-            result.new_velocity = velocity;
-        }
-    } else {
-        result.new_velocity = velocity;
-    }
+    // adjust displacement based on collision this is just wrong, but the purpose was because at one time you wer passing in dt * vel, and then you'd take
+    // the result and then div by dt to get the new vel, which felt weird because we use the dt * vel + 0.5 * a dt^2 model.
+    // if result.collision_occurred { 
+    //     // remove displacement component going into ground
+    //     if result.on_ground {
+    //         vel_dot_normal := dot(displacement, result.ground_normal);
+    //         if vel_dot_normal < 0 {
+    //             result.new_displacement = displacement - vel_dot_normal * result.ground_normal;
+    //         } else {
+    //             result.new_displacement = displacement;
+    //         }
+    //     } else {
+    //         result.new_displacement = displacement;
+    //     }
+    // } else {
+    //     result.new_displacement = displacement;
+    // }
     
     return result;
 }
 
 
-collide_with_world_tracking :: (
-    packet: *Collision_Packet, 
+collide_and_slide_recursive :: (
+    packet: *Recursive_Collision_Data, 
     position: Vector3, 
-    velocity: Vector3, 
+    displacement: Vector3, 
     triangles: []Triangle,
     result: *Ellipsoid_Collision_Result
-) -> Vector3 {
+) -> resulting_position_in_espace: Vector3 {
     
     if packet.collision_recursion_depth > MAX_RECURSION_DEPTH {
         return position;
     }
     
     // setup packet
-    packet.e_velocity = velocity;
-    packet.e_normalized_velocity = normalize(velocity);
+    packet.e_displacement = displacement;
+    packet.e_normalized_displacement = normalize(displacement);
     packet.e_base_point = position;
     packet.found_collision = false;
-    packet.nearest_distance = 0;
+    packet.parametric_distance_along_displacement_at_which_first_collision_occurs = 0;
     
     // check triangles
     for tri: triangles {
@@ -557,21 +387,22 @@ collide_with_world_tracking :: (
         e_tri.p0 = world_to_ellipsoid(tri.p0, packet.ellipsoid_radius);
         e_tri.p1 = world_to_ellipsoid(tri.p1, packet.ellipsoid_radius);
         e_tri.p2 = world_to_ellipsoid(tri.p2, packet.ellipsoid_radius);
-        check_triangle(packet, e_tri);
+        store_collision_data_between_swept_unit_sphere_and_triangle(packet, e_tri);
     }
     
     if !packet.found_collision {
-        return position + velocity;
+        return position + displacement;
     }
     
     // collision occurred
     result.collision_occurred = true;
     
-    destination := position + velocity;
+    destination := position + displacement;
     new_base_point := position;
     
-    if packet.nearest_distance >= VERY_CLOSE_DISTANCE {
-        v := normalize(velocity) * (packet.nearest_distance - VERY_CLOSE_DISTANCE);
+    // if first collision happens far away, then update the base point
+    if packet.parametric_distance_along_displacement_at_which_first_collision_occurs >= VERY_CLOSE_DISTANCE {
+        v := normalize(displacement) * (packet.parametric_distance_along_displacement_at_which_first_collision_occurs - VERY_CLOSE_DISTANCE);
         new_base_point = position + v;
         v = normalize(v);
         packet.intersection_point = packet.intersection_point - VERY_CLOSE_DISTANCE * v;
@@ -598,17 +429,21 @@ collide_with_world_tracking :: (
     slide_plane.d = -dot(slide_plane_normal, slide_plane_origin);
     
     dist := signed_distance_to_plane(destination, slide_plane);
-    new_destination := destination - dist * slide_plane_normal;
-    new_velocity := new_destination - packet.intersection_point;
+    destination_projected_onto_slide_plane := destination - dist * slide_plane_normal;
+    remaining_displacement := destination_projected_onto_slide_plane - packet.intersection_point;
     
-    if length(new_velocity) < VERY_CLOSE_DISTANCE {
-        return new_base_point;
+
+    if length(remaining_displacement) < VERY_CLOSE_DISTANCE {
+        return new_base_point; // ending recursion because we travelled enough.
     }
+
+    // otherwise we still have to displace more, so continue recursion
     
     packet.collision_recursion_depth += 1;
-    return collide_with_world_tracking(packet, new_base_point, new_velocity, triangles, result);
+    return collide_and_slide_recursive(packet, new_base_point, remaining_displacement, triangles, result);
 }
 
+// rename to swept ellipsoid aabb in the future
 make_ellipsoid_movement_aabb :: (position: Vector3, velocity: Vector3, gravity: Vector3, ellipsoid_radius: Vector3) -> AABB {
     // start with ellipsoid at current position
     min_ := position - ellipsoid_radius;
