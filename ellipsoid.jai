@@ -256,7 +256,7 @@ resolve_collisions_against_body_ellipsoid :: (
     body_position: *Vector3, 
     displacement: *Vector3,  // rename to body frame velocity
     on_ground: *bool,
-    gravity: Vector3, // rename to frame gravity
+    gravity: Vector3 = .{0, 0, 0} // rename to frame gravity or do something else...
 ) {
     on_ground.* = false;
     
