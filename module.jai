@@ -53,7 +53,7 @@ convert_obj_to_indexed_triangle_positions :: (obj_data: *Obj_Data) -> [..] Index
     return results;
 }
 
-load_in_map_geometry_from_obj :: (map : *Collision_Geometries, map_obj_path : string) {
+load_in_collision_geometry_from_obj :: (map : *Collision_Geometries, map_obj_path : string) {
 
     obj_data := load_obj(map_obj_path);
     itps := convert_obj_to_indexed_triangle_positions(*obj_data);
