@@ -1,5 +1,6 @@
 // in the future I don't want to depend on all of geom, because all I need is the itp type doing it for now.
 #import "tbx/geometry";
+#import "tbx/model_loading";
 
 #load "axis_aligned_bounding_box.jai";
 #load "ellipsoid.jai";
@@ -18,6 +19,49 @@ Collision_Geometry :: struct {
 Collision_Geometries :: struct {
     indexed_triangle_positions : [..] Indexed_Triangle_Positions;
     aabbs : [..] AABB;
+}
+
+
+convert_obj_to_indexed_triangle_positions :: (obj_data: *Obj_Data) -> [..] Indexed_Triangle_Positions {
+    results: [..] Indexed_Triangle_Positions;
+    
+    for *obj_object : obj_data.all_objects {
+        itp: Indexed_Triangle_Positions;
+        current_index: u32 = 0;
+        
+        for *face : obj_object.faces {
+            if face.face_vertices.count < 3 continue;
+            
+            first_index := current_index;
+            
+            for *fv : face.face_vertices {
+                array_add(*itp.positions, obj_data.all_positions[fv.position_index]);
+                current_index += 1;
+            }
+            
+            // fan triangulation (in case there are more than 3 verts on a face)
+            for i : 1..face.face_vertices.count-2 {
+                array_add(*itp.indices, first_index);
+                array_add(*itp.indices, first_index + cast(u32) i);
+                array_add(*itp.indices, first_index + cast(u32) i + 1);
+            }
+        }
+        
+        array_add(*results, itp);
+    }
+    
+    return results;
+}
+
+load_in_map_geometry_from_obj :: (map : *Collision_Geometries, map_obj_path : string) {
+
+    obj_data := load_obj(map_obj_path);
+    itps := convert_obj_to_indexed_triangle_positions(*obj_data);
+
+    for itps {
+        array_add(*map.aabbs, create_aabb_from_positions(it.positions));
+        array_add(*map.indexed_triangle_positions, it);
+    }
 }
 
 Collision_Result :: struct {
