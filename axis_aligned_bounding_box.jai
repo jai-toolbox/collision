@@ -105,15 +105,31 @@ intersect_ray :: (ray : Ray, aabb: AABB) -> has_intersection: bool, first_hit_pe
 
 // this runs for at most blockers.count, so could be expensive on big map, keep in mind
 // potentially make more efficient with a bvh if this gets slow, should be fine until more players are playin.
-can_hit_target_aabb :: (ray : Ray, target : AABB, blockers : [] AABB) -> bool {
+can_hit_target_aabb :: (ray : Ray, target : AABB, blockers : [] AABB) -> hit: bool, hit_percent: float {
     target_has_intersection, target_first_hit_percent := intersect_ray(ray, target);
-    if !target_has_intersection return false; // you couldn't even reach it, go away.
+    if !target_has_intersection return false, 0;
 
     for blockers {
         blocker_has_intersection, blocker_first_hit_percent := intersect_ray(ray, it);
         if !blocker_has_intersection continue;
-        if blocker_first_hit_percent < target_first_hit_percent return false;
+        if blocker_first_hit_percent < target_first_hit_percent return false, 0;
     }
 
-    return true; // we can hit it if nothing is blocking it.
+    return true, target_first_hit_percent;
+}
+
+closest_blocker_hit :: (ray : Ray, blockers : [] AABB) -> hit: bool, hit_percent: float {
+    closest_percent : float = 1.0;
+    found_hit := false;
+
+    for blockers {
+        has_intersection, first_hit_percent := intersect_ray(ray, it);
+        if !has_intersection continue;
+        if first_hit_percent < closest_percent {
+            closest_percent = first_hit_percent;
+            found_hit = true;
+        }
+    }
+
+    return found_hit, closest_percent;
 }

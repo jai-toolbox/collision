@@ -15,10 +15,19 @@ Collision_Geometry :: struct {
     aabb : AABB;
 }
 
+
 // good to use when you need to iterate over each efficiently
 Collision_Geometries :: struct {
     indexed_triangle_positions : [..] Indexed_Triangle_Positions;
     aabbs : [..] AABB;
+}
+
+deinit :: (using cg : *Collision_Geometries) {
+    for *indexed_triangle_positions {
+        itp_free(it);
+    }
+    array_free(indexed_triangle_positions);
+    array_free(aabbs);
 }
 
 
