@@ -32,10 +32,10 @@ change_aabb_origin :: (aabb : AABB, position: Vector3) -> AABB {
     return out;
 }
 
-aabbs_are_disjoint :: (a : AABB, b : AABB) -> bool {
-return (a.max.x <= b.min.x || a.min.x >= b.max.x || 
-        a.max.y <= b.min.y || a.min.y >= b.max.y ||
-        a.max.z <= b.min.z || a.min.z >= b.max.z);
+aabbs_are_disjoint :: (a: AABB, b: AABB) -> bool {
+    return (a.max.x < b.min.x || a.min.x > b.max.x || 
+            a.max.y < b.min.y || a.min.y > b.max.y ||
+            a.max.z < b.min.z || a.min.z > b.max.z);
 }
 
 aabbs_overlap :: (a : AABB, b : AABB) -> bool {
