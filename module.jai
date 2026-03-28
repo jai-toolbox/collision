@@ -24,7 +24,7 @@ Collision_Geometries :: struct {
 
 deinit :: (using cg : *Collision_Geometries) {
     for *indexed_triangle_positions {
-        itp_free(it);
+        deinit(it);
     }
     array_free(indexed_triangle_positions);
     array_free(aabbs);
