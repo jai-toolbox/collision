@@ -15,6 +15,9 @@ Collision_Geometry :: struct {
     aabb : AABB;
 }
 
+deinit :: (using geo: *Collision_Geometry) {
+    deinit(*indexed_triangle_positions);
+}
 
 // good to use when you need to iterate over each efficiently
 Collision_Geometries :: struct {
@@ -22,14 +25,11 @@ Collision_Geometries :: struct {
     aabbs : [..] AABB;
 }
 
-deinit :: (using cg : *Collision_Geometries) {
-    for *indexed_triangle_positions {
-        deinit(it);
-    }
+deinit :: (using geos: *Collision_Geometries) {
+    for *indexed_triangle_positions deinit(it);
     array_free(indexed_triangle_positions);
     array_free(aabbs);
 }
-
 
 convert_obj_to_indexed_triangle_positions :: (obj_data: *Obj_Data) -> [..] Indexed_Triangle_Positions {
     results: [..] Indexed_Triangle_Positions;
