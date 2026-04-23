@@ -71,6 +71,10 @@ load_in_collision_geometry_from_obj :: (map : *Collision_Geometries, map_obj_pat
         array_add(*map.aabbs, create_aabb_from_positions(it.positions));
         array_add(*map.indexed_triangle_positions, it);
     }
+
+    array_free(itps);
+
+    deinit(*obj_data);
 }
 
 Collision_Result :: struct {
