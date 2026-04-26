@@ -160,10 +160,10 @@ store_collision_data_between_swept_unit_sphere_and_triangle :: (packet: *Recursi
             b := 2.0 * dot(vel, base - vertex);
             c := length_squared(vertex - base) - 1.0;
             
-            found, new_t := get_smallest_non_negative_root_of_quadratic(a, b, c, <<t);
+            found, new_t := get_smallest_non_negative_root_of_quadratic(a, b, c, t.*);
             if found {
-                <<t = new_t;
-                <<collision_point = vertex;
+                t.* = new_t;
+                collision_point.* = vertex;
                 return true;
             }
             return false;
@@ -192,13 +192,13 @@ store_collision_data_between_swept_unit_sphere_and_triangle :: (packet: *Recursi
             b := edge_sq_len * (2.0 * dot(vel, base_to_vertex)) - 2.0 * edge_dot_vel * edge_dot_base_to_vert;
             c := edge_sq_len * (1.0 - length_squared(base_to_vertex)) + edge_dot_base_to_vert * edge_dot_base_to_vert;
             
-            found, new_t := get_smallest_non_negative_root_of_quadratic(a, b, c, <<t);
+            found, new_t := get_smallest_non_negative_root_of_quadratic(a, b, c, t.*);
             if found {
                 // check if intersection is within edge segment
                 f := (edge_dot_vel * new_t - edge_dot_base_to_vert) / edge_sq_len;
                 if f >= 0.0 && f <= 1.0 {
-                    <<t = new_t;
-                    <<collision_point = p1 + f * edge;
+                    t.* = new_t;
+                    collision_point.* = p1 + f * edge;
                     return true;
                 }
             }
