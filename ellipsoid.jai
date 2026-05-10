@@ -42,6 +42,14 @@ world_to_ellipsoid :: (point: Vector3, ellipsoid_radius: Vector3) -> Vector3 {
     };
 }
 
+world_normal_from_ellipsoid_normal :: (normal: Vector3, ellipsoid_radius: Vector3) -> Vector3 {
+    return normalize(Vector3.{
+        normal.x / ellipsoid_radius.x,
+        normal.y / ellipsoid_radius.y,
+        normal.z / ellipsoid_radius.z
+    });
+}
+
 ellipsoid_to_world :: (point: Vector3, ellipsoid_radius: Vector3) -> Vector3 {
     return .{
         point.x * ellipsoid_radius.x,
@@ -80,7 +88,7 @@ store_collision_data_between_swept_unit_sphere_and_triangle :: (packet: *Recursi
     plane := plane_from_triangle(tri);
     
     // only check front-facing triangles
-    if dot(plane.normal, packet.e_normalized_displacement) >= 0 {
+    if dot(plane.normal, packet.e_normalized_displacement) > EPSILON_ {
         return;
     }
     
@@ -95,7 +103,7 @@ store_collision_data_between_swept_unit_sphere_and_triangle :: (packet: *Recursi
     normal_dot_vel := dot(plane.normal, packet.e_displacement);
     
     // sphere traveling parallel to plane
-    if normal_dot_vel == 0 {
+    if abs(normal_dot_vel) <= EPSILON_ {
         if abs(signed_dist) >= 1.0 {
             // Sphere not embedded, no collision possible
             return;
@@ -254,14 +262,14 @@ resolve_collisions_against_body_ellipsoid :: (
     positioned_colliders: Collision_Geometries, 
     ellipsoid_radius: Vector3,
     body_position: *Vector3, 
-    displacement: *Vector3,  // rename to body frame velocity
+    displacement: *Vector3,
     on_ground: *bool,
-    gravity: Vector3 = .{0, 0, 0} // rename to frame gravity or do something else...
+    gravity_displacement: Vector3 = .{0, 0, 0}
 ) {
     on_ground.* = false;
     
     // expand body aabb by velocity + ellipsoid radius for broadphase
-    body_aabb := make_ellipsoid_movement_aabb(body_position.*, displacement.*, gravity, ellipsoid_radius);
+    body_aabb := make_ellipsoid_movement_aabb(body_position.*, displacement.*, gravity_displacement, ellipsoid_radius);
     
     // collect triangles from colliders that pass broadphase
     triangles: [..] Triangle;
@@ -279,20 +287,21 @@ resolve_collisions_against_body_ellipsoid :: (
     didnt_collide_with_anything := triangles.count == 0;
     if didnt_collide_with_anything {
         body_position.* += displacement.*;
-        body_position.* += gravity;
+        body_position.* += gravity_displacement;
+        displacement.* += gravity_displacement;
         return;
     }
     
     result := collide_and_slide(
         body_position.*,
         displacement.*,
-        gravity,
+        gravity_displacement,
         ellipsoid_radius,
         triangles
     );
     
     body_position.* = result.new_position;
-    // displacement.* = result.new_displacement;
+    displacement.* = result.new_displacement;
     on_ground.* = result.on_ground;
 }
 
@@ -300,7 +309,7 @@ resolve_collisions_against_body_ellipsoid :: (
 collide_and_slide :: (
     position: Vector3, // rename to initial position
     displacement: Vector3, 
-    gravity: Vector3,
+    gravity_displacement: Vector3,
     ellipsoid_radius: Vector3, 
     triangles: []Triangle
 ) -> world_space_result: Ellipsoid_Collision_Result {
@@ -325,20 +334,20 @@ collide_and_slide :: (
         *result
     );
     
-    // phase 2: apply gravity, not doing this yet.
-    // packet.collision_recursion_depth = 0;
-    // e_gravity := world_to_ellipsoid(gravity, ellipsoid_radius);
-    // 
-    // final_e_position := collide_and_slide_recursive(
-    //     *packet,
-    //     pos_after_displacement,
-    //     e_gravity,
-    //     triangles,
-    //     *result
-    // );
+    // phase 2: apply gravity as a separate movement, matching Fauerby's response step.
+    packet.collision_recursion_depth = 0;
+    e_gravity_displacement := world_to_ellipsoid(gravity_displacement, ellipsoid_radius);
     
-    // result.new_position = ellipsoid_to_world(final_e_position, ellipsoid_radius);
-    result.new_position = ellipsoid_to_world(pos_after_displacement, ellipsoid_radius);
+    final_e_position := collide_and_slide_recursive(
+        *packet,
+        pos_after_displacement,
+        e_gravity_displacement,
+        triangles,
+        *result
+    );
+    
+    result.new_position = ellipsoid_to_world(final_e_position, ellipsoid_radius);
+    result.new_displacement = result.new_position - position;
     
     // adjust displacement based on collision this is just wrong, but the purpose was because at one time you wer passing in dt * vel, and then you'd take
     // the result and then div by dt to get the new vel, which felt weird because we use the dt * vel + 0.5 * a dt^2 model.
@@ -376,6 +385,10 @@ collide_and_slide_recursive :: (
     
     // setup packet
     packet.e_displacement = displacement;
+    if length_squared(displacement) <= EPSILON_ * EPSILON_ {
+        return position;
+    }
+
     packet.e_normalized_displacement = normalize(displacement);
     packet.e_base_point = position;
     packet.found_collision = false;
@@ -413,7 +426,7 @@ collide_and_slide_recursive :: (
     slide_plane_normal := normalize(new_base_point - packet.intersection_point);
     
     // convert normal back to world space for ground check
-    world_normal := normalize(ellipsoid_to_world(slide_plane_normal, packet.ellipsoid_radius));
+    world_normal := world_normal_from_ellipsoid_normal(slide_plane_normal, packet.ellipsoid_radius);
     
     // check if this is ground (normal pointing up)
     cos_45 :: 0.707;
@@ -444,13 +457,13 @@ collide_and_slide_recursive :: (
 }
 
 // rename to swept ellipsoid aabb in the future
-make_ellipsoid_movement_aabb :: (position: Vector3, velocity: Vector3, gravity: Vector3, ellipsoid_radius: Vector3) -> AABB {
+make_ellipsoid_movement_aabb :: (position: Vector3, velocity: Vector3, gravity_displacement: Vector3, ellipsoid_radius: Vector3) -> AABB {
     // start with ellipsoid at current position
     min_ := position - ellipsoid_radius;
     max_ := position + ellipsoid_radius;
     
     // expand to include destination
-    end_pos := position + velocity + gravity;
+    end_pos := position + velocity + gravity_displacement;
     end_min := end_pos - ellipsoid_radius;
     end_max := end_pos + ellipsoid_radius;
     
