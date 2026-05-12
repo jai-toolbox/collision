@@ -48,12 +48,7 @@ convert_obj_to_indexed_triangle_positions :: (obj_data: *Obj_Data) -> [..] Index
                 current_index += 1;
             }
             
-            // fan triangulation (in case there are more than 3 verts on a face)
-            for i : 1..face.face_vertices.count-2 {
-                array_add(*itp.indices, first_index);
-                array_add(*itp.indices, first_index + cast(u32) i);
-                array_add(*itp.indices, first_index + cast(u32) i + 1);
-            }
+            append_triangulated_polygon_indices(*itp.indices, itp.positions, first_index, face.face_vertices.count);
         }
         
         array_add(*results, itp);
