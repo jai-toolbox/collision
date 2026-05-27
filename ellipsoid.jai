@@ -27,6 +27,7 @@ Recursive_Collision_Data :: struct {
     found_collision: bool;
     parametric_distance_along_displacement_at_which_first_collision_occurs: float;
     intersection_point: Vector3;
+    collision_normal_world: Vector3;
 
     // iteration tracking for recursive calls
     collision_recursion_depth: s32;
@@ -61,9 +62,10 @@ signed_distance_to_plane :: (point: Vector3, plane: Plane) -> float {
 }
 
 EPSILON_ :: 0.00001;
+GROUND_NORMAL_MIN_Y :: 0.7;
 
 // Check collision between a swept unit sphere and one triangle in ellipsoid space.
-store_collision_data_between_swept_unit_sphere_and_triangle :: (packet: *Recursive_Collision_Data, tri: Triangle) {
+store_collision_data_between_swept_unit_sphere_and_triangle :: (packet: *Recursive_Collision_Data, tri: Triangle, world_normal: Vector3) {
     plane := plane_from_triangle(tri);
 
     // Fauerby's sample only tests front-facing triangles.
@@ -75,12 +77,14 @@ store_collision_data_between_swept_unit_sphere_and_triangle :: (packet: *Recursi
     embedded_in_plane := false;
 
     signed_dist := signed_distance_to_plane(packet.e_base_point, plane);
+    // should we not use the normalized displacement?
     normal_dot_vel := dot(plane.normal, packet.e_displacement);
 
-    if abs(normal_dot_vel) <= EPSILON_ {
+    if abs(normal_dot_vel) <= EPSILON_ { // this means our displacement is aligned with the wall
         if abs(signed_dist) >= 1.0 {
-            return;
+            return; // moving same dir as wall and far away = not going to hit.
         } else {
+            // means we're moving along the wall and we're also stuck in the wall.
             embedded_in_plane = true;
             t0 = 0.0;
             t1 = 1.0;
@@ -180,6 +184,7 @@ store_collision_data_between_swept_unit_sphere_and_triangle :: (packet: *Recursi
         if !packet.found_collision || dist_to_collision < packet.parametric_distance_along_displacement_at_which_first_collision_occurs {
             packet.parametric_distance_along_displacement_at_which_first_collision_occurs = dist_to_collision;
             packet.intersection_point = collision_point;
+            packet.collision_normal_world = world_normal;
             packet.found_collision = true;
         }
     }
@@ -191,6 +196,7 @@ MAX_RECURSION_DEPTH :: 5;
 Ellipsoid_Collision_Result :: struct {
     new_position: Vector3;
     new_displacement: Vector3;
+    ground_normal: Vector3;
     on_ground: bool;
     collision_occurred: bool;
 }
@@ -199,13 +205,15 @@ resolve_collisions_against_body_ellipsoid :: (
     positioned_colliders: Collision_Geometries,
     ellipsoid_radius: Vector3,
     body_position: *Vector3,
-    displacement: *Vector3,
+    velocity: *Vector3,
+    dt: float,
     on_ground: *bool,
     gravity_displacement: Vector3 = .{0, 0, 0}
 ) -> Ellipsoid_Collision_Result {
     on_ground.* = false;
+    displacement := velocity.* * dt;
 
-    body_aabb := make_ellipsoid_movement_aabb(body_position.*, displacement.*, gravity_displacement, ellipsoid_radius);
+    body_aabb := make_ellipsoid_movement_aabb(body_position.*, displacement, gravity_displacement, ellipsoid_radius);
 
     triangles: [..] Triangle;
     triangles.allocator = temp;
@@ -218,13 +226,12 @@ resolve_collisions_against_body_ellipsoid :: (
     }
 
     if triangles.count == 0 {
-        body_position.* += displacement.*;
+        body_position.* += displacement;
         body_position.* += gravity_displacement;
-        displacement.* += gravity_displacement;
 
         return .{
             new_position = body_position.*,
-            new_displacement = displacement.*,
+            new_displacement = displacement + gravity_displacement,
             on_ground = false,
             collision_occurred = false
         };
@@ -232,14 +239,14 @@ resolve_collisions_against_body_ellipsoid :: (
 
     result := collide_and_slide(
         body_position.*,
-        displacement.*,
+        velocity,
+        dt,
         gravity_displacement,
         ellipsoid_radius,
         triangles
     );
 
     body_position.* = result.new_position;
-    displacement.* = result.new_displacement;
     on_ground.* = result.on_ground;
 
     return result;
@@ -247,7 +254,8 @@ resolve_collisions_against_body_ellipsoid :: (
 
 collide_and_slide :: (
     position: Vector3,
-    displacement: Vector3,
+    velocity: *Vector3,
+    dt: float,
     gravity_displacement: Vector3,
     ellipsoid_radius: Vector3,
     triangles: []Triangle
@@ -258,6 +266,7 @@ collide_and_slide :: (
     packet.ellipsoid_radius = ellipsoid_radius;
 
     e_position := world_to_ellipsoid(position, ellipsoid_radius);
+    displacement := velocity.* * dt;
     e_displacement := world_to_ellipsoid(displacement, ellipsoid_radius);
 
     packet.collision_recursion_depth = 0;
@@ -267,7 +276,8 @@ collide_and_slide :: (
         e_displacement,
         triangles,
         *result,
-        false
+        false,
+        velocity
     );
 
     e_gravity_displacement := world_to_ellipsoid(gravity_displacement, ellipsoid_radius);
@@ -279,7 +289,8 @@ collide_and_slide :: (
         e_gravity_displacement,
         triangles,
         *result,
-        dot(gravity_displacement, Y3) < 0.0
+        dot(gravity_displacement, Y3) < 0.0,
+        null
     );
 
     result.new_position = ellipsoid_to_world(final_position, ellipsoid_radius);
@@ -288,13 +299,21 @@ collide_and_slide :: (
     return result;
 }
 
+clip_velocity_against_plane :: (velocity: *Vector3, normal: Vector3) {
+    into_plane := dot(velocity.*, normal);
+    if into_plane < 0.0 {
+        velocity.* -= normal * into_plane;
+    }
+}
+
 collide_with_world :: (
     packet: *Recursive_Collision_Data,
     position: Vector3,
     displacement: Vector3,
     triangles: []Triangle,
     result: *Ellipsoid_Collision_Result,
-    track_gravity_contact_as_ground: bool
+    track_gravity_contact_as_ground: bool,
+    velocity_to_clip: *Vector3
 ) -> resulting_position_in_espace: Vector3 {
     if packet.collision_recursion_depth > MAX_RECURSION_DEPTH {
         return position;
@@ -316,7 +335,8 @@ collide_with_world :: (
         e_tri.p1 = world_to_ellipsoid(tri.p1, packet.ellipsoid_radius);
         e_tri.p2 = world_to_ellipsoid(tri.p2, packet.ellipsoid_radius);
 
-        store_collision_data_between_swept_unit_sphere_and_triangle(packet, e_tri);
+        world_normal := plane_from_triangle(tri).normal;
+        store_collision_data_between_swept_unit_sphere_and_triangle(packet, e_tri, world_normal);
     }
 
     if !packet.found_collision {
@@ -324,8 +344,13 @@ collide_with_world :: (
     }
 
     result.collision_occurred = true;
-    if track_gravity_contact_as_ground {
+    if velocity_to_clip != null {
+        clip_velocity_against_plane(velocity_to_clip, packet.collision_normal_world);
+    }
+
+    if track_gravity_contact_as_ground && packet.collision_normal_world.y > GROUND_NORMAL_MIN_Y {
         result.on_ground = true;
+        result.ground_normal = packet.collision_normal_world;
     }
 
     destination := position + displacement;
@@ -355,7 +380,7 @@ collide_with_world :: (
     }
 
     packet.collision_recursion_depth += 1;
-    return collide_with_world(packet, new_base_point, new_displacement_vector, triangles, result, track_gravity_contact_as_ground);
+    return collide_with_world(packet, new_base_point, new_displacement_vector, triangles, result, track_gravity_contact_as_ground, velocity_to_clip);
 }
 
 make_ellipsoid_movement_aabb :: (position: Vector3, velocity: Vector3, gravity_displacement: Vector3, ellipsoid_radius: Vector3) -> AABB {
