@@ -7,6 +7,7 @@
 
 #import "Math";
 #import "Basic";
+#import "String";
 
 
 // good to use when there's just like one of them.
@@ -31,10 +32,20 @@ deinit :: (using geos: *Collision_Geometries) {
     array_free(aabbs);
 }
 
+is_imported_map_trigger_name :: (name: string) -> bool {
+    return begins_with(name, "Jump_Pad.{") ||
+           begins_with(name, "Teleporter.{") ||
+           begins_with(name, "King_Of_The_Hill_Point.{") ||
+           begins_with(name, "Capture_The_Flag_Team_A_Flag_Zone.{") ||
+           begins_with(name, "Capture_The_Flag_Team_B_Flag_Zone.{");
+}
+
 convert_obj_to_indexed_triangle_positions :: (obj_data: *Obj_Data) -> [..] Indexed_Triangle_Positions {
     results: [..] Indexed_Triangle_Positions;
     
     for *obj_object : obj_data.all_objects {
+        if is_imported_map_trigger_name(obj_object.name) continue;
+
         itp: Indexed_Triangle_Positions;
         current_index: u32 = 0;
         
@@ -70,6 +81,109 @@ load_in_collision_geometry_from_obj :: (map : *Collision_Geometries, map_obj_pat
     array_free(itps);
 
     deinit(*obj_data);
+}
+
+gltf_node_local_transform :: (node: *Gltf_Node) -> Matrix4 {
+    if node.has_matrix return node.matrix;
+
+    rotation := rotation_matrix(Matrix4, node.rotation);
+
+    scale_matrix := Matrix4_Identity;
+    scale_matrix.coef[0][0] = node.scale.x;
+    scale_matrix.coef[1][1] = node.scale.y;
+    scale_matrix.coef[2][2] = node.scale.z;
+
+    translation_matrix := Matrix4_Identity;
+    translation_matrix.coef[0][3] = node.translation.x;
+    translation_matrix.coef[1][3] = node.translation.y;
+    translation_matrix.coef[2][3] = node.translation.z;
+
+    return translation_matrix * rotation * scale_matrix;
+}
+
+transform_gltf_point :: (m: Matrix4, p: Vector3) -> Vector3 {
+    return .{
+        m.coef[0][0] * p.x + m.coef[0][1] * p.y + m.coef[0][2] * p.z + m.coef[0][3],
+        m.coef[1][0] * p.x + m.coef[1][1] * p.y + m.coef[1][2] * p.z + m.coef[1][3],
+        m.coef[2][0] * p.x + m.coef[2][1] * p.y + m.coef[2][2] * p.z + m.coef[2][3],
+    };
+}
+
+append_gltf_primitive_to_itp :: (itp: *Indexed_Triangle_Positions, gltf: *Gltf_Data, primitive: *Gltf_Primitive, transform: Matrix4) {
+    if primitive.mode != .TRIANGLES return;
+    if primitive.position_accessor < 0 return;
+
+    positions := read_accessor_as_vector3_array(gltf, primitive.position_accessor);
+    defer array_free(positions);
+
+    base_index := cast(u32) itp.positions.count;
+    for positions array_add(*itp.positions, transform_gltf_point(transform, it));
+
+    if primitive.indices_accessor >= 0 {
+        indices := read_accessor_as_index_array(gltf, primitive.indices_accessor);
+        defer array_free(indices);
+
+        for indices array_add(*itp.indices, base_index + it);
+    } else {
+        for i: 0..positions.count - 1 array_add(*itp.indices, base_index + cast(u32) i);
+    }
+}
+
+gltf_node_to_indexed_triangle_positions :: (gltf: *Gltf_Data, node: *Gltf_Node, transform: Matrix4) -> Indexed_Triangle_Positions {
+    result: Indexed_Triangle_Positions;
+    if node.mesh_index < 0 || node.mesh_index >= gltf.all_meshes.count return result;
+
+    mesh := *gltf.all_meshes[node.mesh_index];
+    for * primitive: mesh.primitives {
+        append_gltf_primitive_to_itp(*result, gltf, primitive, transform);
+    }
+
+    return result;
+}
+
+load_in_collision_geometry_from_gltf_node_recursive :: (map : *Collision_Geometries, gltf: *Gltf_Data, node_index: int, parent_transform: Matrix4) {
+    if node_index < 0 || node_index >= gltf.all_nodes.count return;
+
+    node := *gltf.all_nodes[node_index];
+    transform := parent_transform * gltf_node_local_transform(node);
+
+    if !is_imported_map_trigger_name(node.name) {
+        itp := gltf_node_to_indexed_triangle_positions(gltf, node, transform);
+        if itp.positions.count > 0 && itp.indices.count > 0 {
+            array_add(*map.aabbs, create_aabb_from_positions(itp.positions));
+            array_add(*map.indexed_triangle_positions, itp);
+        } else {
+            deinit(*itp);
+        }
+    }
+
+    for node.children {
+        load_in_collision_geometry_from_gltf_node_recursive(map, gltf, it, transform);
+    }
+}
+
+load_in_collision_geometry_from_gltf :: (map : *Collision_Geometries, map_gltf_path : string) {
+    gltf := load_gltf(map_gltf_path);
+    defer deinit(*gltf);
+
+    scene := get_default_scene(*gltf);
+    if scene {
+        for scene.nodes {
+            load_in_collision_geometry_from_gltf_node_recursive(map, *gltf, it, Matrix4_Identity);
+        }
+    } else {
+        for i: 0..gltf.all_nodes.count - 1 {
+            load_in_collision_geometry_from_gltf_node_recursive(map, *gltf, i, Matrix4_Identity);
+        }
+    }
+}
+
+load_in_collision_geometry_from_model :: (map : *Collision_Geometries, map_path : string) {
+    if ends_with(map_path, ".gltf") {
+        load_in_collision_geometry_from_gltf(map, map_path);
+    } else {
+        load_in_collision_geometry_from_obj(map, map_path);
+    }
 }
 
 Collision_Result :: struct {
