@@ -13,6 +13,7 @@ sliding plane, project the destination to that plane, and recurse.
 #import "Math";
 
 #import "tbx/math";
+#import "tbx/turns";
 
 Recursive_Collision_Data :: struct {
     // ellipsoid radius (in world space)
@@ -33,6 +34,7 @@ Recursive_Collision_Data :: struct {
     collision_recursion_depth: s32;
 }
 
+// given that the characters model is an ellipsoid, this function converts the space to one where that ellipsoid is a unit sphere
 world_to_ellipsoid :: (point: Vector3, ellipsoid_radius: Vector3) -> Vector3 {
     return .{
         point.x / ellipsoid_radius.x,
@@ -41,6 +43,7 @@ world_to_ellipsoid :: (point: Vector3, ellipsoid_radius: Vector3) -> Vector3 {
     };
 }
 
+// and this goes the other way
 ellipsoid_to_world :: (point: Vector3, ellipsoid_radius: Vector3) -> Vector3 {
     return .{
         point.x * ellipsoid_radius.x,
@@ -62,7 +65,13 @@ signed_distance_to_plane :: (point: Vector3, plane: Plane) -> float {
 }
 
 EPSILON_ :: 0.00001;
-GROUND_NORMAL_MIN_Y :: 0.7;
+
+MAX_WALKABLE_GROUND_ANGLE_DEGREES :: 60.0;
+
+is_walkable_ground_normal :: (normal: Vector3) -> bool {
+    ground_normal_min_y := cos_turns(degrees_to_turns(MAX_WALKABLE_GROUND_ANGLE_DEGREES));
+    return normal.y >= ground_normal_min_y;
+}
 
 // Check collision between a swept unit sphere and one triangle in ellipsoid space.
 store_collision_data_between_swept_unit_sphere_and_triangle :: (packet: *Recursive_Collision_Data, tri: Triangle, world_normal: Vector3) {
@@ -201,6 +210,7 @@ Ellipsoid_Collision_Result :: struct {
     collision_occurred: bool;
 }
 
+// we pass position and vel by pointer so we can modify them.
 resolve_collisions_against_body_ellipsoid :: (
     positioned_colliders: Collision_Geometries,
     ellipsoid_radius: Vector3,
@@ -225,7 +235,12 @@ resolve_collisions_against_body_ellipsoid :: (
         extract_triangles_from_geometry(collider, *triangles);
     }
 
-    if triangles.count == 0 {
+    hitting_nothing := triangles.count == 0;
+
+    if hitting_nothing {
+
+        // then we can do the full movement
+
         body_position.* += displacement;
         body_position.* += gravity_displacement;
 
@@ -236,6 +251,8 @@ resolve_collisions_against_body_ellipsoid :: (
             collision_occurred = false
         };
     }
+
+    // otherwise we are potentially hitting at least one triangle
 
     result := collide_and_slide(
         body_position.*,
@@ -306,20 +323,24 @@ clip_velocity_against_plane :: (velocity: *Vector3, normal: Vector3) {
     }
 }
 
+// the actual core logic that does everything. potentally rename to collide with triangles?
 collide_with_world :: (
     packet: *Recursive_Collision_Data,
     position: Vector3,
     displacement: Vector3,
     triangles: []Triangle,
     result: *Ellipsoid_Collision_Result,
-    track_gravity_contact_as_ground: bool,
+    track_gravity_contact_as_ground: bool, // this makes it so that on ground only gets set by the gravity pass
     velocity_to_clip: *Vector3
 ) -> resulting_position_in_espace: Vector3 {
+
     if packet.collision_recursion_depth > MAX_RECURSION_DEPTH {
         return position;
     }
 
-    if length_squared(displacement) <= EPSILON_ * EPSILON_ {
+    barely_going_anywhere := length_squared(displacement) <= EPSILON_ * EPSILON_;
+
+    if barely_going_anywhere {
         return position;
     }
 
@@ -339,16 +360,17 @@ collide_with_world :: (
         store_collision_data_between_swept_unit_sphere_and_triangle(packet, e_tri, world_normal);
     }
 
-    if !packet.found_collision {
+    if !packet.found_collision { // then we can stop recursing
         return position + displacement;
     }
 
     result.collision_occurred = true;
+
     if velocity_to_clip != null {
         clip_velocity_against_plane(velocity_to_clip, packet.collision_normal_world);
     }
 
-    if track_gravity_contact_as_ground && packet.collision_normal_world.y > GROUND_NORMAL_MIN_Y {
+    if track_gravity_contact_as_ground && is_walkable_ground_normal(packet.collision_normal_world) {
         result.on_ground = true;
         result.ground_normal = packet.collision_normal_world;
     }
