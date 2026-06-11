@@ -52,6 +52,10 @@ ellipsoid_to_world :: (point: Vector3, ellipsoid_radius: Vector3) -> Vector3 {
     };
 }
 
+ellipsoid_normal_to_world :: (normal: Vector3, ellipsoid_radius: Vector3) -> Vector3 {
+    return normalize(world_to_ellipsoid(normal, ellipsoid_radius));
+}
+
 plane_from_triangle :: (tri: Triangle) -> Plane {
     edge1 := tri.p1 - tri.p0;
     edge2 := tri.p2 - tri.p0;
@@ -66,7 +70,7 @@ signed_distance_to_plane :: (point: Vector3, plane: Plane) -> float {
 
 EPSILON_ :: 0.00001;
 
-MAX_WALKABLE_GROUND_ANGLE_DEGREES :: 60.0;
+MAX_WALKABLE_GROUND_ANGLE_DEGREES :: 50.0;
 
 is_walkable_ground_normal :: (normal: Vector3) -> bool {
     ground_normal_min_y := cos_turns(degrees_to_turns(MAX_WALKABLE_GROUND_ANGLE_DEGREES));
@@ -366,15 +370,6 @@ collide_with_world :: (
 
     result.collision_occurred = true;
 
-    if velocity_to_clip != null {
-        clip_velocity_against_plane(velocity_to_clip, packet.collision_normal_world);
-    }
-
-    if track_gravity_contact_as_ground && is_walkable_ground_normal(packet.collision_normal_world) {
-        result.on_ground = true;
-        result.ground_normal = packet.collision_normal_world;
-    }
-
     destination := position + displacement;
     new_base_point := position;
 
@@ -388,6 +383,16 @@ collide_with_world :: (
 
     slide_plane_origin := packet.intersection_point;
     slide_plane_normal := normalize(new_base_point - packet.intersection_point);
+    slide_plane_normal_world := ellipsoid_normal_to_world(slide_plane_normal, packet.ellipsoid_radius);
+
+    if velocity_to_clip != null {
+        clip_velocity_against_plane(velocity_to_clip, slide_plane_normal_world);
+    }
+
+    if track_gravity_contact_as_ground && is_walkable_ground_normal(slide_plane_normal_world) {
+        result.on_ground = true;
+        result.ground_normal = slide_plane_normal_world;
+    }
 
     slide_plane: Plane;
     slide_plane.normal = slide_plane_normal;
