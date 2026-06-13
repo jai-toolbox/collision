@@ -4,6 +4,7 @@
 
 #load "axis_aligned_bounding_box.jai";
 #load "ellipsoid.jai";
+#load "kinematic_character.jai";
 
 #import "Math";
 #import "Basic";
