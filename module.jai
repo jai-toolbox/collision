@@ -1,11 +1,14 @@
 // in the future I don't want to depend on all of geom, because all I need is the itp type doing it for now.
 #import "tbx/geometry";
 #import "tbx/model_loading";
+#import "tbx/physics";
 
 #load "axis_aligned_bounding_box.jai";
 #load "ellipsoid.jai";
 #load "kinematic_character.jai";
 
+#import "File";
+#import "File_Utilities";
 #import "Math";
 #import "Basic";
 #import "String";
@@ -21,16 +24,261 @@ deinit :: (using geo: *Collision_Geometry) {
     deinit(*indexed_triangle_positions);
 }
 
+Kinematic_Collision_Triangle_Ref :: struct {
+    mesh_index: int;
+    triangle_index: int;
+}
+
+Kinematic_Collision_Grid_Cell :: struct {
+    triangle_refs: [..] Kinematic_Collision_Triangle_Ref;
+}
+
+Kinematic_Collision_Grid :: struct {
+    built := false;
+    cell_size: float = 2.0;
+    bounds: AABB;
+    cells_x, cells_y, cells_z: int;
+    cells: [..] Kinematic_Collision_Grid_Cell;
+}
+
+CHARACTER_VIRTUAL_COLLISION_CACHE_MAGIC :: 0x43564d31; // "CVM1"
+CHARACTER_VIRTUAL_COLLISION_CACHE_VERSION :: 1;
+
+Character_Virtual_Collision_Mesh_Cache_Header :: struct {
+    magic: u32;
+    version: u32;
+    physics_max_geometry_triangles: int;
+    triangle_count: int;
+    triangle_checksum: u64;
+    mesh_size: int;
+}
+
 // good to use when you need to iterate over each efficiently
 Collision_Geometries :: struct {
     indexed_triangle_positions : [..] Indexed_Triangle_Positions;
     aabbs : [..] AABB;
+    kinematic_grid: Kinematic_Collision_Grid;
+    character_virtual_triangles: [..] Geometry_Triangle;
+    character_virtual_mesh_built := false;
 }
 
 deinit :: (using geos: *Collision_Geometries) {
     for *indexed_triangle_positions deinit(it);
     array_free(indexed_triangle_positions);
     array_free(aabbs);
+    deinit(*kinematic_grid);
+    array_free(character_virtual_triangles);
+    character_virtual_mesh_built = false;
+}
+
+deinit :: (grid: *Kinematic_Collision_Grid) {
+    for * grid.cells array_free(it.triangle_refs);
+    array_free(grid.cells);
+    grid.built = false;
+}
+
+collision_triangle_aabb :: (p0: Vector3, p1: Vector3, p2: Vector3) -> AABB {
+    return .{min = min(min(p0, p1), p2), max = max(max(p0, p1), p2)};
+}
+
+collision_grid_clamp_cell :: (v: int, max_value: int) -> int {
+    if v < 0 return 0;
+    if v >= max_value return max_value - 1;
+    return v;
+}
+
+collision_grid_cell_for_position :: (grid: *Kinematic_Collision_Grid, p: Vector3) -> int, int, int {
+    x := collision_grid_clamp_cell(cast(int) floor((p.x - grid.bounds.min.x) / grid.cell_size), grid.cells_x);
+    y := collision_grid_clamp_cell(cast(int) floor((p.y - grid.bounds.min.y) / grid.cell_size), grid.cells_y);
+    z := collision_grid_clamp_cell(cast(int) floor((p.z - grid.bounds.min.z) / grid.cell_size), grid.cells_z);
+    return x, y, z;
+}
+
+collision_grid_index :: (grid: *Kinematic_Collision_Grid, x: int, y: int, z: int) -> int {
+    return x + y * grid.cells_x + z * grid.cells_x * grid.cells_y;
+}
+
+collision_grid_add_triangle :: (grid: *Kinematic_Collision_Grid, tri_aabb: AABB, ref: Kinematic_Collision_Triangle_Ref) {
+    min_x, min_y, min_z := collision_grid_cell_for_position(grid, tri_aabb.min);
+    max_x, max_y, max_z := collision_grid_cell_for_position(grid, tri_aabb.max);
+
+    for z: min_z..max_z {
+        for y: min_y..max_y {
+            for x: min_x..max_x {
+                cell_index := collision_grid_index(grid, x, y, z);
+                array_add(*grid.cells[cell_index].triangle_refs, ref);
+            }
+        }
+    }
+}
+
+build_kinematic_collision_grid :: (geos: *Collision_Geometries) {
+    deinit(*geos.kinematic_grid);
+    if geos.aabbs.count == 0 return;
+
+    bounds := geos.aabbs[0];
+    for i: 1..geos.aabbs.count - 1 {
+        bounds.min = min(bounds.min, geos.aabbs[i].min);
+        bounds.max = max(bounds.max, geos.aabbs[i].max);
+    }
+
+    // Keep the first pass conservative: avoid dense-grid blowups on very large maps.
+    CELL_SIZE :: 2.0;
+    MAX_CELLS :: 262144;
+    size := bounds.max - bounds.min;
+    cells_x := max(1, cast(int) ceil(size.x / CELL_SIZE));
+    cells_y := max(1, cast(int) ceil(size.y / CELL_SIZE));
+    cells_z := max(1, cast(int) ceil(size.z / CELL_SIZE));
+    total_cells := cells_x * cells_y * cells_z;
+    if total_cells <= 0 || total_cells > MAX_CELLS {
+        log("kinematic collision grid skipped: cells=% dims=(%, %, %)", total_cells, cells_x, cells_y, cells_z);
+        return;
+    }
+
+    grid := *geos.kinematic_grid;
+    grid.cell_size = CELL_SIZE;
+    grid.bounds = bounds;
+    grid.cells_x = cells_x;
+    grid.cells_y = cells_y;
+    grid.cells_z = cells_z;
+    array_resize(*grid.cells, total_cells);
+
+    for itp, mesh_index: geos.indexed_triangle_positions {
+        tri_count := itp.indices.count / 3;
+        for tri_index: 0..tri_count - 1 {
+            p0 := itp.positions[itp.indices[tri_index * 3 + 0]];
+            p1 := itp.positions[itp.indices[tri_index * 3 + 1]];
+            p2 := itp.positions[itp.indices[tri_index * 3 + 2]];
+            collision_grid_add_triangle(grid, collision_triangle_aabb(p0, p1, p2), .{mesh_index = mesh_index, triangle_index = tri_index});
+        }
+    }
+
+    grid.built = true;
+    log("kinematic collision grid built: cells=% dims=(%, %, %) cell_size=%", total_cells, cells_x, cells_y, cells_z, CELL_SIZE);
+}
+
+character_virtual_collision_cache_path :: (map_path: string) -> string {
+    return tprint("%.cvmesh", map_path);
+}
+
+character_virtual_collision_checksum_mix :: (hash: u64, value: u32) -> u64 {
+    FNV_PRIME :: 1099511628211;
+    return (hash ^ cast(u64) value) * FNV_PRIME;
+}
+
+character_virtual_collision_triangle_checksum :: (triangles: [] Geometry_Triangle) -> u64 {
+    hash: u64 = 1469598103934665603;
+    for tri: triangles {
+        hash = character_virtual_collision_checksum_mix(hash, float32_to_bits(cast(float32) tri.a.x));
+        hash = character_virtual_collision_checksum_mix(hash, float32_to_bits(cast(float32) tri.a.y));
+        hash = character_virtual_collision_checksum_mix(hash, float32_to_bits(cast(float32) tri.a.z));
+        hash = character_virtual_collision_checksum_mix(hash, float32_to_bits(cast(float32) tri.b.x));
+        hash = character_virtual_collision_checksum_mix(hash, float32_to_bits(cast(float32) tri.b.y));
+        hash = character_virtual_collision_checksum_mix(hash, float32_to_bits(cast(float32) tri.b.z));
+        hash = character_virtual_collision_checksum_mix(hash, float32_to_bits(cast(float32) tri.c.x));
+        hash = character_virtual_collision_checksum_mix(hash, float32_to_bits(cast(float32) tri.c.y));
+        hash = character_virtual_collision_checksum_mix(hash, float32_to_bits(cast(float32) tri.c.z));
+    }
+    return hash;
+}
+
+try_load_character_virtual_collision_mesh_cache :: (geos: *Collision_Geometries, map_path: string, triangle_checksum: u64) -> bool {
+    cache_path := character_virtual_collision_cache_path(map_path);
+    data, ok := read_entire_file(cache_path, log_errors = false);
+    if !ok return false;
+    defer free(data);
+
+    expected_size := size_of(Character_Virtual_Collision_Mesh_Cache_Header) + size_of(Physics_Character_Virtual_Triangle_Mesh);
+    if data.count != expected_size return false;
+
+    header := (cast(*Character_Virtual_Collision_Mesh_Cache_Header) data.data).*;
+    if header.magic != CHARACTER_VIRTUAL_COLLISION_CACHE_MAGIC return false;
+    if header.version != CHARACTER_VIRTUAL_COLLISION_CACHE_VERSION return false;
+    if header.physics_max_geometry_triangles != PHYSICS_MAX_GEOMETRY_TRIANGLES return false;
+    if header.triangle_count != geos.character_virtual_triangles.count return false;
+    if header.triangle_checksum != triangle_checksum return false;
+    if header.mesh_size != size_of(Physics_Character_Virtual_Triangle_Mesh) return false;
+
+    mesh_data := cast(*u8) data.data + size_of(Character_Virtual_Collision_Mesh_Cache_Header);
+    memcpy(*character_virtual_global_mesh, mesh_data, size_of(Physics_Character_Virtual_Triangle_Mesh));
+    character_virtual_global_mesh.triangles = geos.character_virtual_triangles;
+    geos.character_virtual_mesh_built = character_virtual_global_mesh.valid;
+    if !geos.character_virtual_mesh_built return false;
+
+    log("character virtual collision mesh loaded from cache '%': triangles=% nodes=%",
+        cache_path,
+        geos.character_virtual_triangles.count,
+        character_virtual_global_mesh.node_count);
+    return true;
+}
+
+write_character_virtual_collision_mesh_cache :: (geos: *Collision_Geometries, map_path: string, triangle_checksum: u64) {
+    cache_path := character_virtual_collision_cache_path(map_path);
+    cache_directory := path_strip_filename(cache_path);
+    if cache_directory.count > 0 make_directory_if_it_does_not_exist(cache_directory, recursive = true);
+
+    header := Character_Virtual_Collision_Mesh_Cache_Header.{
+        magic = CHARACTER_VIRTUAL_COLLISION_CACHE_MAGIC,
+        version = CHARACTER_VIRTUAL_COLLISION_CACHE_VERSION,
+        physics_max_geometry_triangles = PHYSICS_MAX_GEOMETRY_TRIANGLES,
+        triangle_count = geos.character_virtual_triangles.count,
+        triangle_checksum = triangle_checksum,
+        mesh_size = size_of(Physics_Character_Virtual_Triangle_Mesh),
+    };
+
+    bytes := size_of(Character_Virtual_Collision_Mesh_Cache_Header) + size_of(Physics_Character_Virtual_Triangle_Mesh);
+    memory := alloc(bytes);
+    defer free(memory);
+
+    memcpy(memory, *header, size_of(Character_Virtual_Collision_Mesh_Cache_Header));
+    memcpy(cast(*u8) memory + size_of(Character_Virtual_Collision_Mesh_Cache_Header), *character_virtual_global_mesh, size_of(Physics_Character_Virtual_Triangle_Mesh));
+
+    ok := write_entire_file(cache_path, memory, bytes);
+    if ok {
+        log("character virtual collision mesh cache written '%': bytes=%", cache_path, bytes);
+    } else {
+        log_error("failed to write character virtual collision mesh cache '%'", cache_path);
+    }
+}
+
+build_character_virtual_collision_mesh :: (geos: *Collision_Geometries, map_path: string) {
+    geos.character_virtual_mesh_built = false;
+    array_free(geos.character_virtual_triangles);
+
+    triangle_count := 0;
+    for itp: geos.indexed_triangle_positions triangle_count += itp.indices.count / 3;
+    if triangle_count <= 0 return;
+
+    if triangle_count > PHYSICS_MAX_GEOMETRY_TRIANGLES {
+        assert(false, tprint("character virtual collision mesh triangle budget exceeded: triangles=% max=%", triangle_count, PHYSICS_MAX_GEOMETRY_TRIANGLES));
+    }
+
+    array_reserve(*geos.character_virtual_triangles, triangle_count);
+    for itp: geos.indexed_triangle_positions {
+        tri_count := itp.indices.count / 3;
+        for tri_index: 0..tri_count - 1 {
+            i0 := cast(int) itp.indices[tri_index * 3 + 0];
+            i1 := cast(int) itp.indices[tri_index * 3 + 1];
+            i2 := cast(int) itp.indices[tri_index * 3 + 2];
+            array_add(*geos.character_virtual_triangles, .{
+                a = itp.positions[i0],
+                b = itp.positions[i1],
+                c = itp.positions[i2],
+            });
+        }
+    }
+
+    triangle_checksum := character_virtual_collision_triangle_checksum(geos.character_virtual_triangles);
+    if try_load_character_virtual_collision_mesh_cache(geos, map_path, triangle_checksum) return;
+
+    physics_character_virtual_build_global_triangle_mesh(geos.character_virtual_triangles);
+    geos.character_virtual_mesh_built = character_virtual_global_mesh.valid;
+    assert(geos.character_virtual_mesh_built, tprint("character virtual collision mesh failed to build: triangles=%", geos.character_virtual_triangles.count));
+    write_character_virtual_collision_mesh_cache(geos, map_path, triangle_checksum);
+    log("character virtual collision mesh %: triangles=% nodes=%",
+        ifx geos.character_virtual_mesh_built then "built" else "failed",
+        geos.character_virtual_triangles.count,
+        character_virtual_global_mesh.node_count);
 }
 
 is_imported_map_trigger_name :: (name: string) -> bool {
@@ -82,6 +330,7 @@ load_in_collision_geometry_from_obj :: (map : *Collision_Geometries, map_obj_pat
     array_free(itps);
 
     deinit(*obj_data);
+    build_character_virtual_collision_mesh(map, map_obj_path);
 }
 
 gltf_node_local_transform :: (node: *Gltf_Node) -> Matrix4 {
@@ -177,6 +426,7 @@ load_in_collision_geometry_from_gltf :: (map : *Collision_Geometries, map_gltf_p
             load_in_collision_geometry_from_gltf_node_recursive(map, *gltf, i, Matrix4_Identity);
         }
     }
+    build_character_virtual_collision_mesh(map, map_gltf_path);
 }
 
 load_in_collision_geometry_from_model :: (map : *Collision_Geometries, map_path : string) {

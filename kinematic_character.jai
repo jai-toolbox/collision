@@ -17,6 +17,42 @@ KINEMATIC_CHARACTER_CONFLICTING_CONTACT_MIN_PENETRATION :: KINEMATIC_CHARACTER_C
 KINEMATIC_CHARACTER_DUPLICATE_CONTACT_POSITION_EPSILON :: 0.0001;
 KINEMATIC_CHARACTER_DUPLICATE_CONTACT_NORMAL_DOT :: 0.999;
 
+Kinematic_Character_Profile_State :: struct {
+    resolve_calls: u64;
+    solve_calls: u64;
+    solve_steps: u64;
+    zero_displacement_solve_calls: u64;
+    depenetrate_calls: u64;
+    depenetrate_iterations: u64;
+    collect_calls: u64;
+    collider_aabb_checks: u64;
+    collider_aabb_hits: u64;
+    triangle_checks: u64;
+    contacts_added: u64;
+    contact_capacity_hits: u64;
+    cleanup_calls: u64;
+    duplicate_contacts_removed: u64;
+    conflicting_contacts_removed: u64;
+    stair_attempts: u64;
+    stair_successes: u64;
+}
+
+kinematic_character_profile_enabled := false;
+kinematic_character_profile_state: Kinematic_Character_Profile_State;
+
+reset_kinematic_character_profile :: () {
+    kinematic_character_profile_state = .{};
+}
+
+set_kinematic_character_profile_enabled :: (enabled: bool) {
+    kinematic_character_profile_enabled = enabled;
+    if enabled reset_kinematic_character_profile();
+}
+
+snapshot_kinematic_character_profile :: () -> Kinematic_Character_Profile_State {
+    return kinematic_character_profile_state;
+}
+
 Kinematic_Character_Ground_State :: enum {
     IN_AIR;
     NOT_SUPPORTED;
@@ -92,7 +128,10 @@ append_kinematic_character_contact :: (
     ellipsoid_radius: Vector3,
     tolerance: float
 ) {
-    if contacts.count >= KINEMATIC_CHARACTER_MAX_CONTACTS return;
+    if contacts.count >= KINEMATIC_CHARACTER_MAX_CONTACTS {
+        if kinematic_character_profile_enabled kinematic_character_profile_state.contact_capacity_hits += 1;
+        return;
+    }
 
     closest := closest_point_on_triangle_for_kinematic_character(e_position, e_tri);
     to_center := e_position - closest;
@@ -126,29 +165,82 @@ append_kinematic_character_contact :: (
         distance = distance,
         had_collision = true
     });
+    if kinematic_character_profile_enabled kinematic_character_profile_state.contacts_added += 1;
 }
 
 collect_kinematic_character_contacts :: (
-    positioned_colliders: Collision_Geometries,
+    positioned_colliders: *Collision_Geometries,
     position: Vector3,
     ellipsoid_radius: Vector3,
     tolerance: float,
     contacts: *[..]Kinematic_Character_Contact
 ) {
+    if kinematic_character_profile_enabled kinematic_character_profile_state.collect_calls += 1;
     contacts.count = 0;
 
     body_aabb := make_ellipsoid_movement_aabb(position, ZERO3, ZERO3, ellipsoid_radius + Vector3.{tolerance, tolerance, tolerance});
     e_position := world_to_ellipsoid(position, ellipsoid_radius);
 
+    if positioned_colliders.kinematic_grid.built {
+        grid := *positioned_colliders.kinematic_grid;
+        min_x, min_y, min_z := collision_grid_cell_for_position(grid, body_aabb.min);
+        max_x, max_y, max_z := collision_grid_cell_for_position(grid, body_aabb.max);
+
+        for z: min_z..max_z {
+            for y: min_y..max_y {
+                for x: min_x..max_x {
+                    cell_index := collision_grid_index(grid, x, y, z);
+                    cell := *grid.cells[cell_index];
+
+                    for ref: cell.triangle_refs {
+                        itp := positioned_colliders.indexed_triangle_positions[ref.mesh_index];
+                        indices := itp.indices;
+                        positions := itp.positions;
+                        tri_index := ref.triangle_index;
+
+                        world_tri: Triangle;
+                        world_tri.p0 = positions[indices[tri_index * 3 + 0]];
+                        world_tri.p1 = positions[indices[tri_index * 3 + 1]];
+                        world_tri.p2 = positions[indices[tri_index * 3 + 2]];
+
+                        tri_aabb := collision_triangle_aabb(world_tri.p0, world_tri.p1, world_tri.p2);
+                        if kinematic_character_profile_enabled kinematic_character_profile_state.collider_aabb_checks += 1;
+                        if aabbs_are_disjoint(tri_aabb, body_aabb) continue;
+                        if kinematic_character_profile_enabled {
+                            kinematic_character_profile_state.collider_aabb_hits += 1;
+                            kinematic_character_profile_state.triangle_checks += 1;
+                        }
+
+                        e_tri: Triangle;
+                        e_tri.p0 = world_to_ellipsoid(world_tri.p0, ellipsoid_radius);
+                        e_tri.p1 = world_to_ellipsoid(world_tri.p1, ellipsoid_radius);
+                        e_tri.p2 = world_to_ellipsoid(world_tri.p2, ellipsoid_radius);
+
+                        append_kinematic_character_contact(contacts, e_position, e_tri, world_tri, ellipsoid_radius, tolerance);
+                        if contacts.count >= KINEMATIC_CHARACTER_MAX_CONTACTS {
+                            if kinematic_character_profile_enabled kinematic_character_profile_state.contact_capacity_hits += 1;
+                            return;
+                        }
+                    }
+                }
+            }
+        }
+
+        return;
+    }
+
     for 0..positioned_colliders.aabbs.count-1 {
+        if kinematic_character_profile_enabled kinematic_character_profile_state.collider_aabb_checks += 1;
         collider := Collision_Geometry.{positioned_colliders.indexed_triangle_positions[it], positioned_colliders.aabbs[it]};
         if aabbs_are_disjoint(collider.aabb, body_aabb) continue;
+        if kinematic_character_profile_enabled kinematic_character_profile_state.collider_aabb_hits += 1;
 
         indices := collider.indexed_triangle_positions.indices;
         positions := collider.indexed_triangle_positions.positions;
         triangle_count := indices.count / 3;
 
         for tri_index: 0..triangle_count-1 {
+            if kinematic_character_profile_enabled kinematic_character_profile_state.triangle_checks += 1;
             world_tri: Triangle;
             world_tri.p0 = positions[indices[tri_index * 3 + 0]];
             world_tri.p1 = positions[indices[tri_index * 3 + 1]];
@@ -160,7 +252,10 @@ collect_kinematic_character_contacts :: (
             e_tri.p2 = world_to_ellipsoid(world_tri.p2, ellipsoid_radius);
 
             append_kinematic_character_contact(contacts, e_position, e_tri, world_tri, ellipsoid_radius, tolerance);
-            if contacts.count >= KINEMATIC_CHARACTER_MAX_CONTACTS return;
+            if contacts.count >= KINEMATIC_CHARACTER_MAX_CONTACTS {
+                if kinematic_character_profile_enabled kinematic_character_profile_state.contact_capacity_hits += 1;
+                return;
+            }
         }
     }
 }
@@ -174,15 +269,17 @@ kinematic_character_recovery_normal :: (contact: Kinematic_Character_Contact) ->
 }
 
 depenetrate_kinematic_character_position :: (
-    positioned_colliders: Collision_Geometries,
+    positioned_colliders: *Collision_Geometries,
     position: Vector3,
     ellipsoid_radius: Vector3,
     contacts: *[..]Kinematic_Character_Contact
 ) -> Vector3, bool {
+    if kinematic_character_profile_enabled kinematic_character_profile_state.depenetrate_calls += 1;
     result := position;
     collided := false;
 
     for 0..KINEMATIC_CHARACTER_MAX_ITERATIONS-1 {
+        if kinematic_character_profile_enabled kinematic_character_profile_state.depenetrate_iterations += 1;
         collect_kinematic_character_contacts(positioned_colliders, result, ellipsoid_radius, KINEMATIC_CHARACTER_COLLISION_TOLERANCE, contacts);
         cleanup_kinematic_character_contacts(contacts);
 
@@ -220,20 +317,23 @@ depenetrate_kinematic_character_position :: (
 }
 
 solve_kinematic_character_position :: (
-    positioned_colliders: Collision_Geometries,
+    positioned_colliders: *Collision_Geometries,
     position: Vector3,
     desired_displacement: Vector3,
     ellipsoid_radius: Vector3,
     contacts: *[..]Kinematic_Character_Contact
 ) -> Vector3, bool {
+    if kinematic_character_profile_enabled kinematic_character_profile_state.solve_calls += 1;
     displacement_length := length(desired_displacement);
     if displacement_length <= EPSILON_ {
+        if kinematic_character_profile_enabled kinematic_character_profile_state.zero_displacement_solve_calls += 1;
         result, collided := depenetrate_kinematic_character_position(positioned_colliders, position, ellipsoid_radius, contacts);
         return result, collided;
     }
 
     step_count := cast(int) ceil(displacement_length / KINEMATIC_CHARACTER_MAX_SOLVE_STEP_DISTANCE);
     if step_count < 1 step_count = 1;
+    if kinematic_character_profile_enabled kinematic_character_profile_state.solve_steps += xx step_count;
 
     step_displacement := desired_displacement / cast(float) step_count;
     result := position;
@@ -271,6 +371,7 @@ merge_kinematic_character_contacts :: (a: *Kinematic_Character_Contact, b: Kinem
 }
 
 cleanup_kinematic_character_contacts :: (contacts: *[..]Kinematic_Character_Contact) {
+    if kinematic_character_profile_enabled kinematic_character_profile_state.cleanup_calls += 1;
     duplicate_removed := 0;
     conflicting_removed := 0;
 
@@ -321,6 +422,10 @@ cleanup_kinematic_character_contacts :: (contacts: *[..]Kinematic_Character_Cont
     }
 
     if duplicate_removed > 0 || conflicting_removed > 0 {
+    }
+    if kinematic_character_profile_enabled {
+        kinematic_character_profile_state.duplicate_contacts_removed += xx duplicate_removed;
+        kinematic_character_profile_state.conflicting_contacts_removed += xx conflicting_removed;
     }
 }
 
@@ -422,13 +527,14 @@ kinematic_character_has_steep_contact_in_direction :: (contacts: []Kinematic_Cha
 }
 
 try_kinematic_character_walk_stairs :: (
-    positioned_colliders: Collision_Geometries,
+    positioned_colliders: *Collision_Geometries,
     ellipsoid_radius: Vector3,
     start_position: Vector3,
     normal_position: Vector3,
     desired_displacement: Vector3,
     active_contacts: []Kinematic_Character_Contact
 ) -> Vector3, bool {
+    if kinematic_character_profile_enabled kinematic_character_profile_state.stair_attempts += 1;
     desired_horizontal := Vector3.{desired_displacement.x, 0, desired_displacement.z};
     desired_horizontal_len := length(desired_horizontal);
     if desired_horizontal_len <= EPSILON_ return normal_position, false;
@@ -478,7 +584,7 @@ try_kinematic_character_walk_stairs :: (
         return normal_position, false;
     }
 
-
+    if kinematic_character_profile_enabled kinematic_character_profile_state.stair_successes += 1;
     return down_position, true;
 }
 
@@ -549,7 +655,7 @@ append_kinematic_character_contacts_for_support :: (dst: *[..]Kinematic_Characte
 }
 
 resolve_collisions_against_kinematic_character :: (
-    positioned_colliders: Collision_Geometries,
+    positioned_colliders: *Collision_Geometries,
     ellipsoid_radius: Vector3,
     body_position: *Vector3,
     velocity: *Vector3,
@@ -557,6 +663,7 @@ resolve_collisions_against_kinematic_character :: (
     on_ground: *bool,
     gravity_displacement: Vector3 = .{0, 0, 0}
 ) -> Kinematic_Character_Result {
+    if kinematic_character_profile_enabled kinematic_character_profile_state.resolve_calls += 1;
     desired_displacement := velocity.* * dt + gravity_displacement;
     start_position := body_position.*;
     start_velocity := velocity.*;
