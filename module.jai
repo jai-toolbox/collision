@@ -56,6 +56,11 @@ Character_Virtual_Collision_Mesh_Cache_Header :: struct {
 // good to use when you need to iterate over each efficiently
 Collision_Geometries :: struct {
     indexed_triangle_positions : [..] Indexed_Triangle_Positions;
+    // Imported trigger meshes that should be drawn but must not participate in
+    // movement, ray tests, navigation, or the CharacterVirtual collision mesh.
+    // Jump pads and teleporters use their authored trigger mesh as their
+    // visible surface.
+    visual_only_indexed_triangle_positions : [..] Indexed_Triangle_Positions;
     aabbs : [..] AABB;
     kinematic_grid: Kinematic_Collision_Grid;
     character_virtual_triangles: [..] Geometry_Triangle;
@@ -65,6 +70,8 @@ Collision_Geometries :: struct {
 deinit :: (using geos: *Collision_Geometries) {
     for *indexed_triangle_positions deinit(it);
     array_free(indexed_triangle_positions);
+    for *visual_only_indexed_triangle_positions deinit(it);
+    array_free(visual_only_indexed_triangle_positions);
     array_free(aabbs);
     deinit(*kinematic_grid);
     array_free(character_virtual_triangles);
@@ -289,28 +296,38 @@ is_imported_map_trigger_name :: (name: string) -> bool {
            begins_with(name, "Capture_The_Flag_Team_B_Flag_Zone.{");
 }
 
+is_visible_imported_map_trigger_name :: (name: string) -> bool {
+    return begins_with(name, "Jump_Pad.{") ||
+           begins_with(name, "Teleporter.{");
+}
+
+obj_object_to_indexed_triangle_positions :: (obj_data: *Obj_Data, obj_object: *Obj_Object) -> Indexed_Triangle_Positions {
+    itp: Indexed_Triangle_Positions;
+    current_index: u32 = 0;
+
+    for *face : obj_object.faces {
+        if face.face_vertices.count < 3 continue;
+
+        first_index := current_index;
+
+        for *fv : face.face_vertices {
+            array_add(*itp.positions, obj_data.all_positions[fv.position_index]);
+            current_index += 1;
+        }
+
+        append_triangulated_polygon_indices(*itp.indices, itp.positions, first_index, face.face_vertices.count);
+    }
+
+    return itp;
+}
+
 convert_obj_to_indexed_triangle_positions :: (obj_data: *Obj_Data) -> [..] Indexed_Triangle_Positions {
     results: [..] Indexed_Triangle_Positions;
     
     for *obj_object : obj_data.all_objects {
         if is_imported_map_trigger_name(obj_object.name) continue;
 
-        itp: Indexed_Triangle_Positions;
-        current_index: u32 = 0;
-        
-        for *face : obj_object.faces {
-            if face.face_vertices.count < 3 continue;
-            
-            first_index := current_index;
-            
-            for *fv : face.face_vertices {
-                array_add(*itp.positions, obj_data.all_positions[fv.position_index]);
-                current_index += 1;
-            }
-            
-            append_triangulated_polygon_indices(*itp.indices, itp.positions, first_index, face.face_vertices.count);
-        }
-        
+        itp := obj_object_to_indexed_triangle_positions(obj_data, obj_object);
         array_add(*results, itp);
     }
     
@@ -325,6 +342,17 @@ load_in_collision_geometry_from_obj :: (map : *Collision_Geometries, map_obj_pat
     for itps {
         array_add(*map.aabbs, create_aabb_from_positions(it.positions));
         array_add(*map.indexed_triangle_positions, it);
+    }
+
+    for *obj_object : obj_data.all_objects {
+        if !is_visible_imported_map_trigger_name(obj_object.name) continue;
+
+        itp := obj_object_to_indexed_triangle_positions(*obj_data, obj_object);
+        if itp.positions.count > 0 && itp.indices.count > 0 {
+            array_add(*map.visual_only_indexed_triangle_positions, itp);
+        } else {
+            deinit(*itp);
+        }
     }
 
     array_free(itps);
@@ -397,11 +425,17 @@ load_in_collision_geometry_from_gltf_node_recursive :: (map : *Collision_Geometr
     node := *gltf.all_nodes[node_index];
     transform := parent_transform * gltf_node_local_transform(node);
 
-    if !is_imported_map_trigger_name(node.name) {
+    is_trigger := is_imported_map_trigger_name(node.name);
+    is_visible_trigger := is_visible_imported_map_trigger_name(node.name);
+    if !is_trigger || is_visible_trigger {
         itp := gltf_node_to_indexed_triangle_positions(gltf, node, transform);
         if itp.positions.count > 0 && itp.indices.count > 0 {
-            array_add(*map.aabbs, create_aabb_from_positions(itp.positions));
-            array_add(*map.indexed_triangle_positions, itp);
+            if is_visible_trigger {
+                array_add(*map.visual_only_indexed_triangle_positions, itp);
+            } else {
+                array_add(*map.aabbs, create_aabb_from_positions(itp.positions));
+                array_add(*map.indexed_triangle_positions, itp);
+            }
         } else {
             deinit(*itp);
         }
