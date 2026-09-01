@@ -1,7 +1,9 @@
 // in the future I don't want to depend on all of geom, because all I need is the itp type doing it for now.
 #import "tbx/geometry";
 #import "tbx/model_loading";
+#scope_file
 #import "tbx/physics";
+#scope_export
 
 #load "axis_aligned_bounding_box.jai";
 
