@@ -300,7 +300,7 @@ build_character_virtual_collision_mesh :: (
         return;
     }
 
-    physics_character_virtual_build_global_triangle_mesh(geos.character_virtual_triangles, progress_callback, progress_context);
+    physics_character_virtual_build_global_triangle_mesh_with_progress(geos.character_virtual_triangles, progress_callback, progress_context);
     geos.character_virtual_mesh_built = character_virtual_global_mesh.valid;
     assert(geos.character_virtual_mesh_built, tprint("character virtual collision mesh failed to build: triangles=%", geos.character_virtual_triangles.count));
     write_character_virtual_collision_mesh_cache(geos, map_path, triangle_checksum);
