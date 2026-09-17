@@ -42,7 +42,7 @@ Kinematic_Collision_Grid :: struct {
 }
 
 CHARACTER_VIRTUAL_COLLISION_CACHE_MAGIC :: 0x43564d31; // "CVM1"
-CHARACTER_VIRTUAL_COLLISION_CACHE_VERSION :: 1;
+CHARACTER_VIRTUAL_COLLISION_CACHE_VERSION :: 2;
 
 Character_Virtual_Collision_Mesh_Cache_Header :: struct {
     magic: u32;
@@ -51,6 +51,12 @@ Character_Virtual_Collision_Mesh_Cache_Header :: struct {
     triangle_count: int;
     triangle_checksum: u64;
     mesh_size: int;
+}
+
+Collision_Load_Progress_Proc :: #type (user_data: *void);
+
+collision_report_load_progress :: inline (callback: Collision_Load_Progress_Proc, user_data: *void) {
+    if callback != null callback(user_data);
 }
 
 // good to use when you need to iterate over each efficiently
@@ -64,6 +70,7 @@ Collision_Geometries :: struct {
     aabbs : [..] AABB;
     kinematic_grid: Kinematic_Collision_Grid;
     character_virtual_triangles: [..] Geometry_Triangle;
+    character_virtual_excluded_geometry_indices: [..] int;
     character_virtual_mesh_built := false;
 }
 
@@ -75,6 +82,7 @@ deinit :: (using geos: *Collision_Geometries) {
     array_free(aabbs);
     deinit(*kinematic_grid);
     array_free(character_virtual_triangles);
+    array_free(character_virtual_excluded_geometry_indices);
     character_virtual_mesh_built = false;
 }
 
@@ -248,12 +256,21 @@ write_character_virtual_collision_mesh_cache :: (geos: *Collision_Geometries, ma
     }
 }
 
-build_character_virtual_collision_mesh :: (geos: *Collision_Geometries, map_path: string) {
+build_character_virtual_collision_mesh :: (
+    geos: *Collision_Geometries,
+    map_path: string,
+    progress_callback: Collision_Load_Progress_Proc = null,
+    progress_context: *void = null
+) {
     geos.character_virtual_mesh_built = false;
     array_free(geos.character_virtual_triangles);
 
     triangle_count := 0;
-    for itp: geos.indexed_triangle_positions triangle_count += itp.indices.count / 3;
+    for itp, geometry_index: geos.indexed_triangle_positions {
+        collision_report_load_progress(progress_callback, progress_context);
+        if array_find(geos.character_virtual_excluded_geometry_indices, geometry_index) continue;
+        triangle_count += itp.indices.count / 3;
+    }
     if triangle_count <= 0 return;
 
     if triangle_count > PHYSICS_MAX_GEOMETRY_TRIANGLES {
@@ -261,7 +278,9 @@ build_character_virtual_collision_mesh :: (geos: *Collision_Geometries, map_path
     }
 
     array_reserve(*geos.character_virtual_triangles, triangle_count);
-    for itp: geos.indexed_triangle_positions {
+    for itp, geometry_index: geos.indexed_triangle_positions {
+        collision_report_load_progress(progress_callback, progress_context);
+        if array_find(geos.character_virtual_excluded_geometry_indices, geometry_index) continue;
         tri_count := itp.indices.count / 3;
         for tri_index: 0..tri_count - 1 {
             i0 := cast(int) itp.indices[tri_index * 3 + 0];
@@ -276,9 +295,12 @@ build_character_virtual_collision_mesh :: (geos: *Collision_Geometries, map_path
     }
 
     triangle_checksum := character_virtual_collision_triangle_checksum(geos.character_virtual_triangles);
-    if try_load_character_virtual_collision_mesh_cache(geos, map_path, triangle_checksum) return;
+    if try_load_character_virtual_collision_mesh_cache(geos, map_path, triangle_checksum) {
+        collision_report_load_progress(progress_callback, progress_context);
+        return;
+    }
 
-    physics_character_virtual_build_global_triangle_mesh(geos.character_virtual_triangles);
+    physics_character_virtual_build_global_triangle_mesh(geos.character_virtual_triangles, progress_callback, progress_context);
     geos.character_virtual_mesh_built = character_virtual_global_mesh.valid;
     assert(geos.character_virtual_mesh_built, tprint("character virtual collision mesh failed to build: triangles=%", geos.character_virtual_triangles.count));
     write_character_virtual_collision_mesh_cache(geos, map_path, triangle_checksum);
@@ -334,17 +356,26 @@ convert_obj_to_indexed_triangle_positions :: (obj_data: *Obj_Data) -> [..] Index
     return results;
 }
 
-load_in_collision_geometry_from_obj :: (map : *Collision_Geometries, map_obj_path : string) {
+load_in_collision_geometry_from_obj :: (
+    map : *Collision_Geometries,
+    map_obj_path : string,
+    progress_callback: Collision_Load_Progress_Proc = null,
+    progress_context: *void = null
+) {
 
+    collision_report_load_progress(progress_callback, progress_context);
     obj_data := load_obj(map_obj_path);
+    collision_report_load_progress(progress_callback, progress_context);
     itps := convert_obj_to_indexed_triangle_positions(*obj_data);
 
     for itps {
+        collision_report_load_progress(progress_callback, progress_context);
         array_add(*map.aabbs, create_aabb_from_positions(it.positions));
         array_add(*map.indexed_triangle_positions, it);
     }
 
     for *obj_object : obj_data.all_objects {
+        collision_report_load_progress(progress_callback, progress_context);
         if !is_visible_imported_map_trigger_name(obj_object.name) continue;
 
         itp := obj_object_to_indexed_triangle_positions(*obj_data, obj_object);
@@ -358,7 +389,7 @@ load_in_collision_geometry_from_obj :: (map : *Collision_Geometries, map_obj_pat
     array_free(itps);
 
     deinit(*obj_data);
-    build_character_virtual_collision_mesh(map, map_obj_path);
+    build_character_virtual_collision_mesh(map, map_obj_path, progress_callback, progress_context);
 }
 
 gltf_node_local_transform :: (node: *Gltf_Node) -> Matrix4 {
@@ -419,8 +450,16 @@ gltf_node_to_indexed_triangle_positions :: (gltf: *Gltf_Data, node: *Gltf_Node, 
     return result;
 }
 
-load_in_collision_geometry_from_gltf_node_recursive :: (map : *Collision_Geometries, gltf: *Gltf_Data, node_index: int, parent_transform: Matrix4) {
+load_in_collision_geometry_from_gltf_node_recursive :: (
+    map : *Collision_Geometries,
+    gltf: *Gltf_Data,
+    node_index: int,
+    parent_transform: Matrix4,
+    progress_callback: Collision_Load_Progress_Proc = null,
+    progress_context: *void = null
+) {
     if node_index < 0 || node_index >= gltf.all_nodes.count return;
+    collision_report_load_progress(progress_callback, progress_context);
 
     node := *gltf.all_nodes[node_index];
     transform := parent_transform * gltf_node_local_transform(node);
@@ -433,6 +472,9 @@ load_in_collision_geometry_from_gltf_node_recursive :: (map : *Collision_Geometr
             if is_visible_trigger {
                 array_add(*map.visual_only_indexed_triangle_positions, itp);
             } else {
+                if begins_with(node.name, "No_Character_Virtual_Collision_") {
+                    array_add(*map.character_virtual_excluded_geometry_indices, map.indexed_triangle_positions.count);
+                }
                 array_add(*map.aabbs, create_aabb_from_positions(itp.positions));
                 array_add(*map.indexed_triangle_positions, itp);
             }
@@ -442,32 +484,44 @@ load_in_collision_geometry_from_gltf_node_recursive :: (map : *Collision_Geometr
     }
 
     for node.children {
-        load_in_collision_geometry_from_gltf_node_recursive(map, gltf, it, transform);
+        load_in_collision_geometry_from_gltf_node_recursive(map, gltf, it, transform, progress_callback, progress_context);
     }
 }
 
-load_in_collision_geometry_from_gltf :: (map : *Collision_Geometries, map_gltf_path : string) {
+load_in_collision_geometry_from_gltf :: (
+    map : *Collision_Geometries,
+    map_gltf_path : string,
+    progress_callback: Collision_Load_Progress_Proc = null,
+    progress_context: *void = null
+) {
+    collision_report_load_progress(progress_callback, progress_context);
     gltf := load_gltf(map_gltf_path);
     defer deinit(*gltf);
+    collision_report_load_progress(progress_callback, progress_context);
 
     scene := get_default_scene(*gltf);
     if scene {
         for scene.nodes {
-            load_in_collision_geometry_from_gltf_node_recursive(map, *gltf, it, Matrix4_Identity);
+            load_in_collision_geometry_from_gltf_node_recursive(map, *gltf, it, Matrix4_Identity, progress_callback, progress_context);
         }
     } else {
         for i: 0..gltf.all_nodes.count - 1 {
-            load_in_collision_geometry_from_gltf_node_recursive(map, *gltf, i, Matrix4_Identity);
+            load_in_collision_geometry_from_gltf_node_recursive(map, *gltf, i, Matrix4_Identity, progress_callback, progress_context);
         }
     }
-    build_character_virtual_collision_mesh(map, map_gltf_path);
+    build_character_virtual_collision_mesh(map, map_gltf_path, progress_callback, progress_context);
 }
 
-load_in_collision_geometry_from_model :: (map : *Collision_Geometries, map_path : string) {
+load_in_collision_geometry_from_model :: (
+    map : *Collision_Geometries,
+    map_path : string,
+    progress_callback: Collision_Load_Progress_Proc = null,
+    progress_context: *void = null
+) {
     if ends_with(map_path, ".gltf") {
-        load_in_collision_geometry_from_gltf(map, map_path);
+        load_in_collision_geometry_from_gltf(map, map_path, progress_callback, progress_context);
     } else {
-        load_in_collision_geometry_from_obj(map, map_path);
+        load_in_collision_geometry_from_obj(map, map_path, progress_callback, progress_context);
     }
 }
 
