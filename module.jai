@@ -1,11 +1,11 @@
 // in the future I don't want to depend on all of geom, because all I need is the itp type doing it for now.
 #import "tbx/geometry";
 #import "tbx/model_loading";
+#import "tbx/math";
 #scope_file
 #import "tbx/physics";
 #scope_export
 
-#load "axis_aligned_bounding_box.jai";
 
 #import "File";
 #import "File_Utilities";
@@ -554,7 +554,7 @@ physics_raycast_indexed_geometry :: (ray: Ray, itp: Indexed_Triangle_Positions, 
         v0 := itp.positions[itp.indices[triangle_index * 3 + 0]] + offset;
         v1 := itp.positions[itp.indices[triangle_index * 3 + 1]] + offset;
         v2 := itp.positions[itp.indices[triangle_index * 3 + 2]] + offset;
-        fraction := physics_ray_triangle(ray.origin, ray.reach, v0, v1, v2);
+        fraction := ray_triangle_intersection(ray.origin, ray.reach, v0, v1, v2);
         if fraction > 1.0 || fraction >= result.hit_percent continue;
 
         result.hit = true;
@@ -634,7 +634,7 @@ physics_point_inside_indexed_geometry :: (point: Vector3, itp: Indexed_Triangle_
         v0 := itp.positions[itp.indices[triangle_index * 3 + 0]] + offset;
         v1 := itp.positions[itp.indices[triangle_index * 3 + 1]] + offset;
         v2 := itp.positions[itp.indices[triangle_index * 3 + 2]] + offset;
-        fraction := physics_ray_triangle(point, direction, v0, v1, v2);
+        fraction := ray_triangle_intersection(point, direction, v0, v1, v2);
         if fraction == FLOAT32_MAX || fraction <= 0.000001 || fraction > 1.0 continue;
 
         duplicate := false;
@@ -642,7 +642,7 @@ physics_point_inside_indexed_geometry :: (point: Vector3, itp: Indexed_Triangle_
             p0 := itp.positions[itp.indices[previous_index * 3 + 0]] + offset;
             p1 := itp.positions[itp.indices[previous_index * 3 + 1]] + offset;
             p2 := itp.positions[itp.indices[previous_index * 3 + 2]] + offset;
-            previous_fraction := physics_ray_triangle(point, direction, p0, p1, p2);
+            previous_fraction := ray_triangle_intersection(point, direction, p0, p1, p2);
             if previous_fraction != FLOAT32_MAX && abs(previous_fraction - fraction) <= 0.000001 {
                 duplicate = true;
                 break;
