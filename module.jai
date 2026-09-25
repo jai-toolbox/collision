@@ -501,7 +501,7 @@ load_in_collision_geometry_from_gltf :: (
 
     scene := get_default_scene(*gltf);
     if scene {
-        for scene.nodes {
+        for scene.root_nodes {
             load_in_collision_geometry_from_gltf_node_recursive(map, *gltf, it, Matrix4_Identity, progress_callback, progress_context);
         }
     } else {
