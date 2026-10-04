@@ -78,46 +78,46 @@ Kinematic_Character_Result :: struct {
 }
 
 closest_point_on_triangle_for_kinematic_character :: (p: Vector3, tri: Triangle) -> Vector3 {
-    ab := tri.p1 - tri.p0;
-    ac := tri.p2 - tri.p0;
-    ap := p - tri.p0;
+    ab := tri.b - tri.a;
+    ac := tri.c - tri.a;
+    ap := p - tri.a;
 
     d1 := dot(ab, ap);
     d2 := dot(ac, ap);
-    if d1 <= 0.0 && d2 <= 0.0 return tri.p0;
+    if d1 <= 0.0 && d2 <= 0.0 return tri.a;
 
-    bp := p - tri.p1;
+    bp := p - tri.b;
     d3 := dot(ab, bp);
     d4 := dot(ac, bp);
-    if d3 >= 0.0 && d4 <= d3 return tri.p1;
+    if d3 >= 0.0 && d4 <= d3 return tri.b;
 
     vc := d1 * d4 - d3 * d2;
     if vc <= 0.0 && d1 >= 0.0 && d3 <= 0.0 {
         v := d1 / (d1 - d3);
-        return tri.p0 + v * ab;
+        return tri.a + v * ab;
     }
 
-    cp := p - tri.p2;
+    cp := p - tri.c;
     d5 := dot(ab, cp);
     d6 := dot(ac, cp);
-    if d6 >= 0.0 && d5 <= d6 return tri.p2;
+    if d6 >= 0.0 && d5 <= d6 return tri.c;
 
     vb := d5 * d2 - d1 * d6;
     if vb <= 0.0 && d2 >= 0.0 && d6 <= 0.0 {
         w := d2 / (d2 - d6);
-        return tri.p0 + w * ac;
+        return tri.a + w * ac;
     }
 
     va := d3 * d6 - d5 * d4;
     if va <= 0.0 && (d4 - d3) >= 0.0 && (d5 - d6) >= 0.0 {
         w := (d4 - d3) / ((d4 - d3) + (d5 - d6));
-        return tri.p1 + w * (tri.p2 - tri.p1);
+        return tri.b + w * (tri.c - tri.b);
     }
 
     denom := 1.0 / (va + vb + vc);
     v := vb * denom;
     w := vc * denom;
-    return tri.p0 + ab * v + ac * w;
+    return tri.a + ab * v + ac * w;
 }
 
 append_kinematic_character_contact :: (
@@ -199,11 +199,11 @@ collect_kinematic_character_contacts :: (
                         tri_index := ref.triangle_index;
 
                         world_tri: Triangle;
-                        world_tri.p0 = positions[indices[tri_index * 3 + 0]];
-                        world_tri.p1 = positions[indices[tri_index * 3 + 1]];
-                        world_tri.p2 = positions[indices[tri_index * 3 + 2]];
+                        world_tri.a = positions[indices[tri_index * 3 + 0]];
+                        world_tri.b = positions[indices[tri_index * 3 + 1]];
+                        world_tri.c = positions[indices[tri_index * 3 + 2]];
 
-                        tri_aabb := collision_triangle_aabb(world_tri.p0, world_tri.p1, world_tri.p2);
+                        tri_aabb := collision_triangle_aabb(world_tri.a, world_tri.b, world_tri.c);
                         if kinematic_character_profile_enabled kinematic_character_profile_state.collider_aabb_checks += 1;
                         if aabbs_are_disjoint(tri_aabb, body_aabb) continue;
                         if kinematic_character_profile_enabled {
@@ -212,9 +212,9 @@ collect_kinematic_character_contacts :: (
                         }
 
                         e_tri: Triangle;
-                        e_tri.p0 = world_to_ellipsoid(world_tri.p0, ellipsoid_radius);
-                        e_tri.p1 = world_to_ellipsoid(world_tri.p1, ellipsoid_radius);
-                        e_tri.p2 = world_to_ellipsoid(world_tri.p2, ellipsoid_radius);
+                        e_tri.a = world_to_ellipsoid(world_tri.a, ellipsoid_radius);
+                        e_tri.b = world_to_ellipsoid(world_tri.b, ellipsoid_radius);
+                        e_tri.c = world_to_ellipsoid(world_tri.c, ellipsoid_radius);
 
                         append_kinematic_character_contact(contacts, e_position, e_tri, world_tri, ellipsoid_radius, tolerance);
                         if contacts.count >= KINEMATIC_CHARACTER_MAX_CONTACTS {
@@ -242,14 +242,14 @@ collect_kinematic_character_contacts :: (
         for tri_index: 0..triangle_count-1 {
             if kinematic_character_profile_enabled kinematic_character_profile_state.triangle_checks += 1;
             world_tri: Triangle;
-            world_tri.p0 = positions[indices[tri_index * 3 + 0]];
-            world_tri.p1 = positions[indices[tri_index * 3 + 1]];
-            world_tri.p2 = positions[indices[tri_index * 3 + 2]];
+            world_tri.a = positions[indices[tri_index * 3 + 0]];
+            world_tri.b = positions[indices[tri_index * 3 + 1]];
+            world_tri.c = positions[indices[tri_index * 3 + 2]];
 
             e_tri: Triangle;
-            e_tri.p0 = world_to_ellipsoid(world_tri.p0, ellipsoid_radius);
-            e_tri.p1 = world_to_ellipsoid(world_tri.p1, ellipsoid_radius);
-            e_tri.p2 = world_to_ellipsoid(world_tri.p2, ellipsoid_radius);
+            e_tri.a = world_to_ellipsoid(world_tri.a, ellipsoid_radius);
+            e_tri.b = world_to_ellipsoid(world_tri.b, ellipsoid_radius);
+            e_tri.c = world_to_ellipsoid(world_tri.c, ellipsoid_radius);
 
             append_kinematic_character_contact(contacts, e_position, e_tri, world_tri, ellipsoid_radius, tolerance);
             if contacts.count >= KINEMATIC_CHARACTER_MAX_CONTACTS {

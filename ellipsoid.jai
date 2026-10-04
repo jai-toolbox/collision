@@ -57,10 +57,10 @@ ellipsoid_normal_to_world :: (normal: Vector3, ellipsoid_radius: Vector3) -> Vec
 }
 
 plane_from_triangle :: (tri: Triangle) -> Plane {
-    edge1 := tri.p1 - tri.p0;
-    edge2 := tri.p2 - tri.p0;
+    edge1 := tri.b - tri.a;
+    edge2 := tri.c - tri.a;
     normal := normalize(cross(edge1, edge2));
-    d := -dot(normal, tri.p0);
+    d := -dot(normal, tri.a);
     return .{normal, d};
 }
 
@@ -157,9 +157,9 @@ store_collision_data_between_swept_unit_sphere_and_triangle :: (packet: *Recursi
             return false;
         };
 
-        found_collision = check_vertex(base, velocity, tri.p0, velocity_sq_len, *t, *collision_point) || found_collision;
-        found_collision = check_vertex(base, velocity, tri.p1, velocity_sq_len, *t, *collision_point) || found_collision;
-        found_collision = check_vertex(base, velocity, tri.p2, velocity_sq_len, *t, *collision_point) || found_collision;
+        found_collision = check_vertex(base, velocity, tri.a, velocity_sq_len, *t, *collision_point) || found_collision;
+        found_collision = check_vertex(base, velocity, tri.b, velocity_sq_len, *t, *collision_point) || found_collision;
+        found_collision = check_vertex(base, velocity, tri.c, velocity_sq_len, *t, *collision_point) || found_collision;
 
         check_edge :: (base: Vector3, velocity: Vector3, p1: Vector3, p2: Vector3, velocity_sq_len: float, t: *float, collision_point: *Vector3) -> bool {
             edge := p2 - p1;
@@ -186,9 +186,9 @@ store_collision_data_between_swept_unit_sphere_and_triangle :: (packet: *Recursi
             return false;
         };
 
-        found_collision = check_edge(base, velocity, tri.p0, tri.p1, velocity_sq_len, *t, *collision_point) || found_collision;
-        found_collision = check_edge(base, velocity, tri.p1, tri.p2, velocity_sq_len, *t, *collision_point) || found_collision;
-        found_collision = check_edge(base, velocity, tri.p2, tri.p0, velocity_sq_len, *t, *collision_point) || found_collision;
+        found_collision = check_edge(base, velocity, tri.a, tri.b, velocity_sq_len, *t, *collision_point) || found_collision;
+        found_collision = check_edge(base, velocity, tri.b, tri.c, velocity_sq_len, *t, *collision_point) || found_collision;
+        found_collision = check_edge(base, velocity, tri.c, tri.a, velocity_sq_len, *t, *collision_point) || found_collision;
     }
 
     if found_collision {
@@ -356,9 +356,9 @@ collide_with_world :: (
 
     for tri: triangles {
         e_tri: Triangle;
-        e_tri.p0 = world_to_ellipsoid(tri.p0, packet.ellipsoid_radius);
-        e_tri.p1 = world_to_ellipsoid(tri.p1, packet.ellipsoid_radius);
-        e_tri.p2 = world_to_ellipsoid(tri.p2, packet.ellipsoid_radius);
+        e_tri.a = world_to_ellipsoid(tri.a, packet.ellipsoid_radius);
+        e_tri.b = world_to_ellipsoid(tri.b, packet.ellipsoid_radius);
+        e_tri.c = world_to_ellipsoid(tri.c, packet.ellipsoid_radius);
 
         world_normal := plane_from_triangle(tri).normal;
         store_collision_data_between_swept_unit_sphere_and_triangle(packet, e_tri, world_normal);
@@ -437,9 +437,9 @@ extract_triangles_from_geometry :: (collider: Collision_Geometry, triangles: *[.
 
     for i: 0..triangle_count-1 {
         tri: Triangle;
-        tri.p0 = positions[indices[i * 3 + 0]];
-        tri.p1 = positions[indices[i * 3 + 1]];
-        tri.p2 = positions[indices[i * 3 + 2]];
+        tri.a = positions[indices[i * 3 + 0]];
+        tri.b = positions[indices[i * 3 + 1]];
+        tri.c = positions[indices[i * 3 + 2]];
         array_add(triangles, tri);
     }
 }
@@ -449,9 +449,9 @@ extract_triangles_from_indexed_geometry :: (vertices: []Vector3, indices: []u32,
 
     for i: 0..triangle_count-1 {
         tri: Triangle;
-        tri.p0 = vertices[indices[i * 3 + 0]];
-        tri.p1 = vertices[indices[i * 3 + 1]];
-        tri.p2 = vertices[indices[i * 3 + 2]];
+        tri.a = vertices[indices[i * 3 + 0]];
+        tri.b = vertices[indices[i * 3 + 1]];
+        tri.c = vertices[indices[i * 3 + 2]];
         array_add(triangles, tri);
     }
 }
