@@ -18,10 +18,12 @@
 Collision_Geometry :: struct {
     indexed_triangle_positions : Indexed_Triangle_Positions;
     aabb : AABB;
+    triangle_materials: [..] Surface_Material;
 }
 
 deinit :: (using geo: *Collision_Geometry) {
     deinit(*indexed_triangle_positions);
+    array_free(triangle_materials);
 }
 
 Kinematic_Collision_Triangle_Ref :: struct {
@@ -62,6 +64,9 @@ collision_report_load_progress :: inline (callback: Collision_Load_Progress_Proc
 // good to use when you need to iterate over each efficiently
 Collision_Geometries :: struct {
     indexed_triangle_positions : [..] Indexed_Triangle_Positions;
+    // Parallel to indexed_triangle_positions; each entry is in source triangle
+    // order, not the BVH's reordered order. Empty entries mean default concrete.
+    triangle_materials: [..] [] Surface_Material;
     // Imported trigger meshes that should be drawn but must not participate in
     // movement, ray tests, navigation, or the CharacterVirtual collision mesh.
     // Jump pads and teleporters use their authored trigger mesh as their
@@ -77,6 +82,8 @@ Collision_Geometries :: struct {
 deinit :: (using geos: *Collision_Geometries) {
     for *indexed_triangle_positions deinit(it);
     array_free(indexed_triangle_positions);
+    for materials: triangle_materials if materials.data != null free(materials.data);
+    array_free(triangle_materials);
     for *visual_only_indexed_triangle_positions deinit(it);
     array_free(visual_only_indexed_triangle_positions);
     array_free(aabbs);
@@ -314,6 +321,7 @@ is_imported_map_trigger_name :: (name: string) -> bool {
     return begins_with(name, "Jump_Pad.{") ||
            begins_with(name, "Teleporter.{") ||
            begins_with(name, "King_Of_The_Hill_Point.{") ||
+           begins_with(name, "Capture_Point.{") ||
            begins_with(name, "Capture_The_Flag_Team_A_Flag_Zone.{") ||
            begins_with(name, "Capture_The_Flag_Team_B_Flag_Zone.{");
 }
@@ -392,24 +400,6 @@ load_in_collision_geometry_from_obj :: (
     build_character_virtual_collision_mesh(map, map_obj_path, progress_callback, progress_context);
 }
 
-gltf_node_local_transform :: (node: *Gltf_Node) -> Matrix4 {
-    if node.has_matrix return node.matrix;
-
-    rotation := rotation_matrix(Matrix4, node.rotation);
-
-    scale_matrix := Matrix4_Identity;
-    scale_matrix.coef[0][0] = node.scale.x;
-    scale_matrix.coef[1][1] = node.scale.y;
-    scale_matrix.coef[2][2] = node.scale.z;
-
-    translation_matrix := Matrix4_Identity;
-    translation_matrix.coef[0][3] = node.translation.x;
-    translation_matrix.coef[1][3] = node.translation.y;
-    translation_matrix.coef[2][3] = node.translation.z;
-
-    return translation_matrix * rotation * scale_matrix;
-}
-
 transform_gltf_point :: (m: Matrix4, p: Vector3) -> Vector3 {
     return .{
         m.coef[0][0] * p.x + m.coef[0][1] * p.y + m.coef[0][2] * p.z + m.coef[0][3],
@@ -438,13 +428,20 @@ append_gltf_primitive_to_itp :: (itp: *Indexed_Triangle_Positions, gltf: *Gltf_D
     }
 }
 
-gltf_node_to_indexed_triangle_positions :: (gltf: *Gltf_Data, node: *Gltf_Node, transform: Matrix4) -> Indexed_Triangle_Positions {
+gltf_node_to_indexed_triangle_positions :: (gltf: *Gltf_Data, node: *Gltf_Node, transform: Matrix4, triangle_materials: *[..] Surface_Material = null) -> Indexed_Triangle_Positions {
     result: Indexed_Triangle_Positions;
     if node.mesh_index < 0 || node.mesh_index >= gltf.all_meshes.count return result;
 
     mesh := *gltf.all_meshes[node.mesh_index];
     for * primitive: mesh.primitives {
+        old_triangle_count := result.indices.count / 3;
         append_gltf_primitive_to_itp(*result, gltf, primitive, transform);
+        if triangle_materials != null {
+            surface: Surface_Material;
+            material := get_gltf_material(gltf, primitive.material_index);
+            if material != null surface = .{material.surface_type, material.receives_decals};
+            for old_triangle_count..result.indices.count / 3 - 1 array_add(triangle_materials, surface);
+        }
     }
 
     return result;
@@ -466,20 +463,28 @@ load_in_collision_geometry_from_gltf_node_recursive :: (
 
     is_trigger := is_imported_map_trigger_name(node.name);
     is_visible_trigger := is_visible_imported_map_trigger_name(node.name);
-    if !is_trigger || is_visible_trigger {
-        itp := gltf_node_to_indexed_triangle_positions(gltf, node, transform);
+    // Control-point meshes are physical platforms, drawn by the mode's
+    // ownership overlay rather than the static scene renderer.
+    is_control_point := begins_with(node.name,"Capture_Point.{");
+    if !is_trigger || is_visible_trigger || is_control_point {
+        materials: [..] Surface_Material;
+        itp := gltf_node_to_indexed_triangle_positions(gltf, node, transform, *materials);
         if itp.positions.count > 0 && itp.indices.count > 0 {
             if is_visible_trigger {
                 array_add(*map.visual_only_indexed_triangle_positions, itp);
+                array_free(materials);
             } else {
                 if begins_with(node.name, "No_Character_Virtual_Collision_") {
                     array_add(*map.character_virtual_excluded_geometry_indices, map.indexed_triangle_positions.count);
                 }
                 array_add(*map.aabbs, create_aabb_from_positions(itp.positions));
                 array_add(*map.indexed_triangle_positions, itp);
+                while map.triangle_materials.count < map.indexed_triangle_positions.count - 1 array_add(*map.triangle_materials, .{});
+                array_add(*map.triangle_materials, materials);
             }
         } else {
             deinit(*itp);
+            array_free(materials);
         }
     }
 
@@ -531,6 +536,15 @@ Ray_Hit_Result :: struct {
     hit_point : Vector3;
     hit_normal : Vector3;
     triangle_index : int = -1;  // which triangle was hit
+    mesh_index: int = -1;
+    surface: Surface_Material;
+}
+
+collision_triangle_material :: (map: Collision_Geometries, mesh_index: int, triangle_index: int) -> Surface_Material {
+    if mesh_index < 0 || mesh_index >= map.triangle_materials.count return .{};
+    materials := map.triangle_materials[mesh_index];
+    if triangle_index < 0 || triangle_index >= materials.count return .{};
+    return materials[triangle_index];
 }
 
 physics_segment_raycast_aabb :: (ray: Ray, aabb: AABB) -> bool, float {
@@ -576,7 +590,11 @@ physics_raycast_collision_map :: (ray: Ray, map: Collision_Geometries) -> Ray_Hi
         if !aabb_hit || aabb_fraction >= result.hit_percent continue;
 
         hit := physics_raycast_indexed_geometry(ray, map.indexed_triangle_positions[i]);
-        if hit.hit && hit.hit_percent < result.hit_percent result = hit;
+        if hit.hit && hit.hit_percent < result.hit_percent {
+            result = hit;
+            result.mesh_index = i;
+            result.surface = collision_triangle_material(map, i, hit.triangle_index);
+        }
     }
 
     return result;
@@ -617,7 +635,11 @@ physics_sphere_cast_collision_map :: (start: Vector3, direction: Vector3, radius
         if !aabb_hit || aabb_fraction >= result.hit_percent continue;
 
         hit := physics_sphere_cast_indexed_geometry(start, direction, radius, map.indexed_triangle_positions[i]);
-        if hit.hit && hit.hit_percent < result.hit_percent result = hit;
+        if hit.hit && hit.hit_percent < result.hit_percent {
+            result = hit;
+            result.mesh_index = i;
+            result.surface = collision_triangle_material(map, i, hit.triangle_index);
+        }
     }
 
     return result;
