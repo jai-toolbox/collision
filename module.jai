@@ -574,7 +574,7 @@ physics_raycast_indexed_geometry :: (ray: Ray, itp: Indexed_Triangle_Positions, 
         result.hit = true;
         result.hit_percent = fraction;
         result.hit_point = ray.origin + ray.reach * fraction;
-        result.hit_normal = physics_normalized_or(cross(v1 - v0, v2 - v0), Y3);
+        result.hit_normal = physics_normalized_or(cross(v1 - v0, v2 - v0), WORLD_UP);
         result.triangle_index = triangle_index;
     }
 
@@ -701,6 +701,7 @@ physics_character_capsule_touches_geometry :: (
     body.shape.radius = capsule_radius;
     body.shape.half_height_of_cylinder = capsule_half_height;
     body.position = position;
+    body.rotation = rotation_between_vectors(Y3, WORLD_UP);
 
     itp := geometry.indexed_triangle_positions;
     triangle_count := itp.indices.count / 3;
@@ -724,15 +725,13 @@ physics_character_capsule_overlaps_aabb :: (
     capsule_half_height: float = (1.75 - 2.0 * 0.4) * 0.5,
     capsule_radius: float = 0.4
 ) -> bool {
-    segment_min_y := position.y - capsule_half_height;
-    segment_max_y := position.y + capsule_half_height;
-
-    dx := max(max(aabb.min.x - position.x, 0.0), position.x - aabb.max.x);
-    dz := max(max(aabb.min.z - position.z, 0.0), position.z - aabb.max.z);
-    dy: float;
-    if segment_max_y < aabb.min.y dy = aabb.min.y - segment_max_y;
-    if segment_min_y > aabb.max.y dy = segment_min_y - aabb.max.y;
-    return dx * dx + dy * dy + dz * dz <= capsule_radius * capsule_radius;
+    // The capsule's local axis is Y, but its world axis is WORLD_UP.
+    endpoint_a := position - WORLD_UP * capsule_half_height;
+    endpoint_b := position + WORLD_UP * capsule_half_height;
+    segment_min := min(endpoint_a, endpoint_b);
+    segment_max := max(endpoint_a, endpoint_b);
+    gap := max(max(aabb.min - segment_max, ZERO3), segment_min - aabb.max);
+    return dot(gap, gap) <= capsule_radius * capsule_radius;
 }
 
 physics_can_hit_target_geometry :: (ray: Ray, target: Collision_Geometry, blockers: Collision_Geometries) -> hit: bool, hit_result: Ray_Hit_Result {

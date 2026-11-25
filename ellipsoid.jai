@@ -73,8 +73,8 @@ EPSILON_ :: 0.00001;
 MAX_WALKABLE_GROUND_ANGLE_DEGREES :: 50.0;
 
 is_walkable_ground_normal :: (normal: Vector3) -> bool {
-    ground_normal_min_y := cos_turns(degrees_to_turns(MAX_WALKABLE_GROUND_ANGLE_DEGREES));
-    return normal.y >= ground_normal_min_y;
+    ground_normal_min_up := cos_turns(degrees_to_turns(MAX_WALKABLE_GROUND_ANGLE_DEGREES));
+    return world_height(normal) >= ground_normal_min_up;
 }
 
 // Check collision between a swept unit sphere and one triangle in ellipsoid space.
@@ -233,8 +233,8 @@ resolve_collisions_against_body_ellipsoid :: (
     triangles.allocator = temp;
 
     for 0..positioned_colliders.aabbs.count-1 {
-        collider := Collision_Geometry.{positioned_colliders.indexed_triangle_positions[it], positioned_colliders.aabbs[it]};
-        if aabbs_are_disjoint(collider.aabb, body_aabb) continue;
+        collider := Collision_Geometry.{indexed_triangle_positions = positioned_colliders.indexed_triangle_positions[it], aabb = positioned_colliders.aabbs[it]};
+        if disjoint(collider.aabb, body_aabb) continue;
 
         extract_triangles_from_geometry(collider, *triangles);
     }
@@ -310,7 +310,7 @@ collide_and_slide :: (
         e_gravity_displacement,
         triangles,
         *result,
-        dot(gravity_displacement, Y3) < 0.0,
+        dot(gravity_displacement, WORLD_UP) < 0.0,
         null
     );
 

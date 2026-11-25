@@ -153,7 +153,7 @@ append_kinematic_character_contact :: (
         surface_normal_world = -surface_normal_world;
     }
 
-    if dot(contact_normal_world, Y3) > dot(surface_normal_world, Y3) {
+    if dot(contact_normal_world, WORLD_UP) > dot(surface_normal_world, WORLD_UP) {
         surface_normal_world = contact_normal_world;
     }
 
@@ -205,7 +205,7 @@ collect_kinematic_character_contacts :: (
 
                         tri_aabb := collision_triangle_aabb(world_tri.a, world_tri.b, world_tri.c);
                         if kinematic_character_profile_enabled kinematic_character_profile_state.collider_aabb_checks += 1;
-                        if aabbs_are_disjoint(tri_aabb, body_aabb) continue;
+                        if disjoint(tri_aabb, body_aabb) continue;
                         if kinematic_character_profile_enabled {
                             kinematic_character_profile_state.collider_aabb_hits += 1;
                             kinematic_character_profile_state.triangle_checks += 1;
@@ -231,8 +231,8 @@ collect_kinematic_character_contacts :: (
 
     for 0..positioned_colliders.aabbs.count-1 {
         if kinematic_character_profile_enabled kinematic_character_profile_state.collider_aabb_checks += 1;
-        collider := Collision_Geometry.{positioned_colliders.indexed_triangle_positions[it], positioned_colliders.aabbs[it]};
-        if aabbs_are_disjoint(collider.aabb, body_aabb) continue;
+        collider := Collision_Geometry.{indexed_triangle_positions = positioned_colliders.indexed_triangle_positions[it], aabb = positioned_colliders.aabbs[it]};
+        if disjoint(collider.aabb, body_aabb) continue;
         if kinematic_character_profile_enabled kinematic_character_profile_state.collider_aabb_hits += 1;
 
         indices := collider.indexed_triangle_positions.indices;
@@ -365,7 +365,7 @@ merge_kinematic_character_contacts :: (a: *Kinematic_Character_Contact, b: Kinem
         a.contact_normal = b.contact_normal;
     }
 
-    if dot(b.surface_normal, Y3) > dot(a.surface_normal, Y3) {
+    if dot(b.surface_normal, WORLD_UP) > dot(a.surface_normal, WORLD_UP) {
         a.surface_normal = b.surface_normal;
     }
 }
@@ -435,7 +435,7 @@ cancel_velocity_towards_kinematic_steep_slopes :: (velocity: *Vector3, contacts:
         if is_walkable_ground_normal(it.surface_normal) continue;
 
         normal := it.contact_normal;
-        normal -= dot(normal, Y3) * Y3;
+        normal -= dot(normal, WORLD_UP) * WORLD_UP;
         len_sq := length_squared(normal);
         if len_sq <= EPSILON_ * EPSILON_ continue;
 
@@ -504,13 +504,13 @@ clip_velocity_against_kinematic_contacts :: (velocity: *Vector3, contacts: []Kin
 }
 
 align_kinematic_velocity_to_walkable_ground :: (velocity: *Vector3, ground_normal: Vector3) {
-    horizontal := Vector3.{velocity.x, 0, velocity.z};
+    horizontal := world_horizontal(velocity.*);
     horizontal_speed := length(horizontal);
     if horizontal_speed <= EPSILON_ return;
-    if abs(ground_normal.y) <= EPSILON_ return;
+    if abs(world_height(ground_normal)) <= EPSILON_ return;
 
     ramp_aligned := horizontal;
-    ramp_aligned.y = -(ground_normal.x * horizontal.x + ground_normal.z * horizontal.z) / ground_normal.y;
+    ramp_aligned -= WORLD_UP * (dot(ground_normal, horizontal) / world_height(ground_normal));
 
     before := velocity.*;
     velocity.* = ramp_aligned;
@@ -535,40 +535,40 @@ try_kinematic_character_walk_stairs :: (
     active_contacts: []Kinematic_Character_Contact
 ) -> Vector3, bool {
     if kinematic_character_profile_enabled kinematic_character_profile_state.stair_attempts += 1;
-    desired_horizontal := Vector3.{desired_displacement.x, 0, desired_displacement.z};
+    desired_horizontal := world_horizontal(desired_displacement);
     desired_horizontal_len := length(desired_horizontal);
     if desired_horizontal_len <= EPSILON_ return normal_position, false;
 
     forward_dir := desired_horizontal / desired_horizontal_len;
-    achieved_horizontal := Vector3.{normal_position.x - start_position.x, 0, normal_position.z - start_position.z};
+    achieved_horizontal := world_horizontal(normal_position - start_position);
     achieved_forward_len := max(0.0, dot(achieved_horizontal, forward_dir));
     if achieved_forward_len + 0.0001 >= desired_horizontal_len return normal_position, false;
     if !kinematic_character_has_steep_contact_in_direction(active_contacts, forward_dir) return normal_position, false;
 
     step_forward_len := max(KINEMATIC_CHARACTER_MIN_STEP_FORWARD, desired_horizontal_len - achieved_forward_len);
-    step_up := Y3 * KINEMATIC_CHARACTER_STEP_UP_HEIGHT;
+    step_up := WORLD_UP * KINEMATIC_CHARACTER_STEP_UP_HEIGHT;
     step_forward := forward_dir * step_forward_len;
-    step_down := -Y3 * (KINEMATIC_CHARACTER_STEP_UP_HEIGHT + KINEMATIC_CHARACTER_STEP_DOWN_EXTRA);
+    step_down := -WORLD_UP * (KINEMATIC_CHARACTER_STEP_UP_HEIGHT + KINEMATIC_CHARACTER_STEP_DOWN_EXTRA);
 
     contacts: [..] Kinematic_Character_Contact;
     contacts.allocator = temp;
 
     up_position, up_collided := solve_kinematic_character_position(positioned_colliders, start_position, step_up, ellipsoid_radius, *contacts);
-    up_delta_y := up_position.y - start_position.y;
-    if up_delta_y <= KINEMATIC_CHARACTER_COLLISION_TOLERANCE {
+    up_delta_height := world_height(up_position - start_position);
+    if up_delta_height <= KINEMATIC_CHARACTER_COLLISION_TOLERANCE {
         return normal_position, false;
     }
 
     forward_position, forward_collided := solve_kinematic_character_position(positioned_colliders, up_position, step_forward, ellipsoid_radius, *contacts);
-    forward_horizontal := Vector3.{forward_position.x - up_position.x, 0, forward_position.z - up_position.z};
+    forward_horizontal := world_horizontal(forward_position - up_position);
     forward_progress := dot(forward_horizontal, forward_dir);
     if forward_progress <= 0.0001 {
         return normal_position, false;
     }
 
     down_position, down_collided := solve_kinematic_character_position(positioned_colliders, forward_position, step_down, ellipsoid_radius, *contacts);
-    stepped_delta_y := down_position.y - start_position.y;
-    if stepped_delta_y > KINEMATIC_CHARACTER_STEP_UP_HEIGHT + KINEMATIC_CHARACTER_COLLISION_TOLERANCE {
+    stepped_delta_height := world_height(down_position - start_position);
+    if stepped_delta_height > KINEMATIC_CHARACTER_STEP_UP_HEIGHT + KINEMATIC_CHARACTER_COLLISION_TOLERANCE {
         return normal_position, false;
     }
 
@@ -578,7 +578,7 @@ try_kinematic_character_walk_stairs :: (
         return normal_position, false;
     }
 
-    stepped_horizontal := Vector3.{down_position.x - start_position.x, 0, down_position.z - start_position.z};
+    stepped_horizontal := world_horizontal(down_position - start_position);
     stepped_forward_len := dot(stepped_horizontal, forward_dir);
     if stepped_forward_len <= achieved_forward_len + 0.0001 {
         return normal_position, false;
@@ -604,7 +604,7 @@ classify_kinematic_character_ground :: (velocity: Vector3, contacts: []Kinematic
             continue;
         }
 
-        cos_angle := dot(it.surface_normal, Y3);
+        cos_angle := dot(it.surface_normal, WORLD_UP);
         if cos_angle > best_up {
             best_up = cos_angle;
             best_contact = it;
@@ -622,7 +622,7 @@ classify_kinematic_character_ground :: (velocity: Vector3, contacts: []Kinematic
         }
     }
 
-    ground_normal := Y3;
+    ground_normal := WORLD_UP;
     if avg_count > 0 {
         ground_normal = normalize(avg_normal);
     } else if best_contact != null {
@@ -638,7 +638,7 @@ classify_kinematic_character_ground :: (velocity: Vector3, contacts: []Kinematic
         result = .NOT_SUPPORTED;
     } else {
         result = .IN_AIR;
-        ground_normal = Y3;
+        ground_normal = WORLD_UP;
     }
 
 
