@@ -74,7 +74,7 @@ MAX_WALKABLE_GROUND_ANGLE_DEGREES :: 50.0;
 
 is_walkable_ground_normal :: (normal: Vector3) -> bool {
     ground_normal_min_up := cos_turns(degrees_to_turns(MAX_WALKABLE_GROUND_ANGLE_DEGREES));
-    return world_height(normal) >= ground_normal_min_up;
+    return project(normal, WORLD_UP) >= ground_normal_min_up;
 }
 
 // Check collision between a swept unit sphere and one triangle in ellipsoid space.

@@ -504,13 +504,13 @@ clip_velocity_against_kinematic_contacts :: (velocity: *Vector3, contacts: []Kin
 }
 
 align_kinematic_velocity_to_walkable_ground :: (velocity: *Vector3, ground_normal: Vector3) {
-    horizontal := world_horizontal(velocity.*);
+    horizontal := project_onto_plane(velocity.*, WORLD_UP);
     horizontal_speed := length(horizontal);
     if horizontal_speed <= EPSILON_ return;
-    if abs(world_height(ground_normal)) <= EPSILON_ return;
+    if abs(project(ground_normal, WORLD_UP)) <= EPSILON_ return;
 
     ramp_aligned := horizontal;
-    ramp_aligned -= WORLD_UP * (dot(ground_normal, horizontal) / world_height(ground_normal));
+    ramp_aligned -= WORLD_UP * (dot(ground_normal, horizontal) / project(ground_normal, WORLD_UP));
 
     before := velocity.*;
     velocity.* = ramp_aligned;
@@ -535,12 +535,12 @@ try_kinematic_character_walk_stairs :: (
     active_contacts: []Kinematic_Character_Contact
 ) -> Vector3, bool {
     if kinematic_character_profile_enabled kinematic_character_profile_state.stair_attempts += 1;
-    desired_horizontal := world_horizontal(desired_displacement);
+    desired_horizontal := project_onto_plane(desired_displacement, WORLD_UP);
     desired_horizontal_len := length(desired_horizontal);
     if desired_horizontal_len <= EPSILON_ return normal_position, false;
 
     forward_dir := desired_horizontal / desired_horizontal_len;
-    achieved_horizontal := world_horizontal(normal_position - start_position);
+    achieved_horizontal := project_onto_plane(normal_position - start_position, WORLD_UP);
     achieved_forward_len := max(0.0, dot(achieved_horizontal, forward_dir));
     if achieved_forward_len + 0.0001 >= desired_horizontal_len return normal_position, false;
     if !kinematic_character_has_steep_contact_in_direction(active_contacts, forward_dir) return normal_position, false;
@@ -554,20 +554,20 @@ try_kinematic_character_walk_stairs :: (
     contacts.allocator = temp;
 
     up_position, up_collided := solve_kinematic_character_position(positioned_colliders, start_position, step_up, ellipsoid_radius, *contacts);
-    up_delta_height := world_height(up_position - start_position);
+    up_delta_height := project(up_position - start_position, WORLD_UP);
     if up_delta_height <= KINEMATIC_CHARACTER_COLLISION_TOLERANCE {
         return normal_position, false;
     }
 
     forward_position, forward_collided := solve_kinematic_character_position(positioned_colliders, up_position, step_forward, ellipsoid_radius, *contacts);
-    forward_horizontal := world_horizontal(forward_position - up_position);
+    forward_horizontal := project_onto_plane(forward_position - up_position, WORLD_UP);
     forward_progress := dot(forward_horizontal, forward_dir);
     if forward_progress <= 0.0001 {
         return normal_position, false;
     }
 
     down_position, down_collided := solve_kinematic_character_position(positioned_colliders, forward_position, step_down, ellipsoid_radius, *contacts);
-    stepped_delta_height := world_height(down_position - start_position);
+    stepped_delta_height := project(down_position - start_position, WORLD_UP);
     if stepped_delta_height > KINEMATIC_CHARACTER_STEP_UP_HEIGHT + KINEMATIC_CHARACTER_COLLISION_TOLERANCE {
         return normal_position, false;
     }
@@ -578,7 +578,7 @@ try_kinematic_character_walk_stairs :: (
         return normal_position, false;
     }
 
-    stepped_horizontal := world_horizontal(down_position - start_position);
+    stepped_horizontal := project_onto_plane(down_position - start_position, WORLD_UP);
     stepped_forward_len := dot(stepped_horizontal, forward_dir);
     if stepped_forward_len <= achieved_forward_len + 0.0001 {
         return normal_position, false;
